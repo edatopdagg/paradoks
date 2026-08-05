@@ -1,0 +1,14 @@
+# Python sanal ortamı
+backend/.venv/
+
+# Python cache dosyaları
+__pycache__/
+*.pyc
+
+# Ortam değişkenleri
+.env
+
+# VS Code ayarları
+.vscode/
+
+backend/vector_db/

@@ -1,0 +1,32 @@
+[
+    {
+        "chunk_id": "chunk_001",
+        "text": "Cell Broadcast allows warning messages to be delivered to all mobile devices within a geographical area.",
+        "org": "3GPP",
+        "code": "TS 23.041",
+        "version": "20.0.0",
+        "clause": "9.1.3",
+        "status": "available",
+        "source_url": "https://www.3gpp.org/"
+    },
+    {
+        "chunk_id": "chunk_002",
+        "text": "Warning messages may be cancelled using a cancellation request that contains the message identifier and serial number.",
+        "org": "3GPP",
+        "code": "TS 23.041",
+        "version": "20.0.0",
+        "clause": "9.1.3.4.2",
+        "status": "available",
+        "source_url": "https://www.3gpp.org/"
+    },
+    {
+        "chunk_id": "chunk_003",
+        "text": "CBS supports emergency alerts for earthquakes, tsunamis, floods and other public warning scenarios.",
+        "org": "3GPP",
+        "code": "TS 23.041",
+        "version": "20.0.0",
+        "clause": "5.2",
+        "status": "available",
+        "source_url": "https://www.3gpp.org/"
+    }
+]

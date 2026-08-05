@@ -1,0 +1,22 @@
+from pathlib import Path
+
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-small"
+CHROMA_DB_PATH = BASE_DIR / "vector_db"
+CHROMA_COLLECTION_NAME = "telecom_standards"
+
+QUERY_PREFIX = "query: "
+PASSAGE_PREFIX = "passage: "
+
+OLLAMA_BASE_URL = "http://localhost:11434"
+OLLAMA_CHAT_URL = f"{OLLAMA_BASE_URL}/api/chat"
+OLLAMA_MODEL_NAME = "qwen3.5:2b-q4_K_M"
+OLLAMA_TIMEOUT_SECONDS = 180
+
+MAX_RETRIEVAL_DISTANCE = 0.43
+
+RERANKER_MODEL_NAME = "BAAI/bge-reranker-v2-m3"
+RERANKER_TOP_K = 2
+RERANKER_MAX_LENGTH = 512
