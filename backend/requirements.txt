@@ -3,3 +3,4 @@ uvicorn[standard]==0.52.1
 chromadb==1.5.9
 sentence-transformers==5.6.1
 requests==2.34.2
+python-dotenv==1.2.2

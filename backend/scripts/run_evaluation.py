@@ -148,7 +148,7 @@ def evaluate_case(case: dict[str, Any]) -> dict[str, Any]:
         "reply": reply,
         "source_ok": source_ok,
         "required_facts_ok": required_facts_ok,
-        "missing_facts_groups": missing_facts_groups,
+        "missing_fact_groups": missing_fact_groups,
         "forbidden_claims_ok": forbidden_claims_ok,
         "detected_forbidden_claims": detected_claims,
         "abstention_ok": abstention_ok,
