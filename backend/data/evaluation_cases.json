@@ -1,0 +1,105 @@
+[
+  {
+    "id": "definition_001",
+    "category": "definition",
+    "question": "Cell Broadcast nedir?",
+    "expected_document": "TS 23.041",
+    "expected_clause": "9.1.3",
+    "required_fact_groups": [
+      [
+        "belirli bir coğrafi alan",
+        "belirli bir coğrafi bölge"
+      ],
+      [
+        "mobil cihazlara uyarı mesajı gönderme",
+        "mobil cihazlara uyarı mesajlarının gönderilmesi",
+        "mobil cihazlara uyarı mesajlarının gönderilmesini"
+      ]
+    ],
+    "forbidden_claim_groups": [],
+    "should_abstain": false
+  },
+  {
+    "id": "usage_001",
+    "category": "usage_scenario",
+    "question": "Cell Broadcast hangi acil durum uyarılarını destekler?",
+    "expected_document": "TS 23.041",
+    "expected_clause": "5.2",
+    "required_fact_groups": [
+      [
+        "deprem",
+        "depremler"
+      ],
+      [
+        "tsunami",
+        "tsunamiler"
+      ],
+      [
+        "sel",
+        "seller",
+        "taşkın"
+      ],
+      [
+        "diğer kamu uyarısı senaryoları",
+        "diğer kamu uyarıları",
+        "diğer kamusal uyarı senaryoları"
+      ]
+    ],
+    "forbidden_claim_groups": [
+      [
+        "yerçekimi şiddeti",
+        "yerçekimi şiddetli"
+      ],
+      [
+        "siber güvenlik",
+        "siber güvenlik riski"
+      ]
+    ],
+    "should_abstain": false
+  },
+  {
+    "id": "procedure_001",
+    "category": "procedure",
+    "question": "Cell Broadcast uyarı mesajı nasıl iptal edilir?",
+    "expected_document": "TS 23.041",
+    "expected_clause": "9.1.3.4.2",
+    "required_fact_groups": [
+      [
+        "cancellation request",
+        "iptal talebi",
+        "iptal isteği"
+      ],
+      [
+        "message identifier",
+        "mesaj kimliği",
+        "mesaj kimlik numarası",
+        "mesajın kimlik numarası"
+      ],
+      [
+        "serial number",
+        "seri numarası"
+      ]
+    ],
+    "forbidden_claim_groups": [
+      [
+        "telefon numarası kullanılır",
+        "telefon numarası gereklidir"
+      ],
+      [
+        "mesaj otomatik olarak iptal edilir",
+        "otomatik olarak iptal edilir"
+      ]
+    ],
+    "should_abstain": false
+  },
+  {
+    "id": "unsupported_001",
+    "category": "out_of_scope",
+    "question": "5G network slicing nasıl yapılandırılır?",
+    "expected_document": null,
+    "expected_clause": null,
+    "required_fact_groups": [],
+    "forbidden_claim_groups": [],
+    "should_abstain": true
+  }
+]
