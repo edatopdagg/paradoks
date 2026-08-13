@@ -2,62 +2,72 @@ from typing import Any
 
 
 SYSTEM_PROMPT = """
-Sen yalnızca verilen telekomünikasyon standardı parçalarına dayanarak cevap veren kaynak kontrollü bir asistansın.
+Sen, yalnızca verilen telekomünikasyon standardı parçalarına dayanarak cevap veren kaynak kontrollü bir asistansın.
 
-Kesin kurallar:
-1. Yalnızca kullanıcı promptunda verilen standart metinlerini kullan.
-2. Kaynaklarda açıkça yazmayan hiçbir amacı, sebebi, özelliği veya teknik bilgiyi ekleme.
-3. Tahmin yapma, yorum yapma ve genel bilginden yararlanma.
-4. Liste sorulursa kaynakta geçen öğeleri doğrudan ve eksiksiz listele.
-5. İngilizce kaynak metnini Türkçeye doğru ve sade biçimde çevir.
-6. Aynı bilgiyi cevap içinde tekrar etme.
-7. Belge kodu, sürüm veya madde numarası uydurma.
-8. Kaynak listesini cevap metnine ekleme; kaynaklar backend tarafından ayrıca gösterilecek.
-9. Cevabı Türkçe, kısa ve doğrudan ver.
-10. Kaynaklarda cevap bulunmuyorsa yalnızca şu cümleyi yaz:
+Kurallar:
+- Yalnızca verilen standart metinlerini kullan.
+- Kaynakta açıkça bulunmayan bilgi ekleme, tahmin veya yorum yapma.
+- İngilizce kaynakları doğru ve sade Türkçeyle aktar.
+- Aynı bilgiyi tekrar etme.
+- Belge, sürüm veya madde numarası uydurma.
+- Kaynak listesini cevaba yazma; backend ayrıca gösterecek.
+- Cevabı kısa, doğrudan ve Türkçe ver.
+- Yeterli bilgi yoksa yalnızca:
 "Bu soruyu yanıtlamak için yeterli standart bilgisi bulunamadı."
 """.strip()
 
 
-def build_context(chunks: list[dict[str, Any]]) -> str:
+def build_context(
+    chunks: list[dict[str, Any]],
+) -> str:
     context_parts: list[str] = []
 
-    for index, chunk in enumerate(chunks, start=1):
+    for chunk in chunks:
         metadata = chunk["metadata"]
+
+        code = metadata.get(
+            "code",
+            "Bilinmiyor",
+        )
+
+        clause = metadata.get(
+            "clause",
+            "Bilinmiyor",
+        )
+
+        text = (
+            chunk.get("text")
+            or ""
+        ).strip()
 
         context_parts.append(
             "\n".join(
                 [
-                    f"KAYNAK {index}",
-                    f"Kuruluş: {metadata.get('org', 'Bilinmiyor')}",
-                    f"Belge: {metadata.get('code', 'Bilinmiyor')}",
-                    f"Versiyon: {metadata.get('version', 'Bilinmiyor')}",
-                    f"Madde: {metadata.get('clause', 'Bilinmiyor')}",
-                    f"Metin: {chunk['text']}",
+                    f"[{code} | Madde {clause}]",
+                    text,
                 ]
             )
         )
 
-    return "\n\n---\n\n".join(context_parts)
+    return "\n\n".join(
+        context_parts
+    )
 
 
 def build_user_prompt(
     question: str,
     chunks: list[dict[str, Any]],
 ) -> str:
-    context = build_context(chunks)
+    context = build_context(
+        chunks
+    )
 
     return f"""
-KULLANICI SORUSU:
+SORU:
 {question}
 
-STANDART KAYNAKLARI:
+KAYNAKLAR:
 {context}
 
-Görev:
-Kullanıcının sorusuna doğrudan cevap ver.
-Yalnızca yukarıdaki standart kaynaklarını kullan.
-Gereksiz giriş yapma.
-Cevabı 2-5 cümle arasında tut.
-Kaynaklar yetersizse "Bu soruyu yanıtlamak için yeterli standart bilgisi bulunamadı." de.
+Yalnızca bu kaynaklara dayanarak 2-4 cümlelik doğrudan bir cevap ver.
 """.strip()
