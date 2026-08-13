@@ -17,8 +17,6 @@ from app.services.reranker_service import Reranker
 # PIPELINE AYARLARI
 # ---------------------------------------------------------
 
-# Eski değer 5'ti.
-# Yeni temiz DB ile önce 3 semantic aday alıyoruz.
 RETRIEVAL_TOP_K = 3
 
 # Ollama'ya en fazla 2 kaynak chunk gönder.
@@ -33,7 +31,8 @@ def _deduplicate_results(
     results: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """
-    Aynı belge/madde/metin tekrarlarını reranker öncesinde temizler.
+    Aynı belge/madde/metin tekrarlarını
+    reranker öncesinde temizler.
     """
 
     unique_results: list[dict[str, Any]] = []
@@ -88,11 +87,15 @@ def _build_blocked_sources(
 ) -> list[dict[str, Any]]:
     return [
         {
-            "org": result["metadata"].get(
+            "org": result[
+                "metadata"
+            ].get(
                 "org",
                 "Bilinmiyor",
             ),
-            "code": result["metadata"].get(
+            "code": result[
+                "metadata"
+            ].get(
                 "code",
                 "Bilinmiyor",
             ),
@@ -130,7 +133,9 @@ def generate_reply(
     available_results = [
         result
         for result in results
-        if result["metadata"].get(
+        if result[
+            "metadata"
+        ].get(
             "status"
         )
         in {
@@ -142,13 +147,14 @@ def generate_reply(
     blocked_results = [
         result
         for result in results
-        if result["metadata"].get(
+        if result[
+            "metadata"
+        ].get(
             "status"
         )
         == "blocked"
     ]
 
-    # Reranker'a aynı içeriği birden fazla kez gönderme.
     available_results = (
         _deduplicate_results(
             available_results
@@ -212,12 +218,9 @@ def generate_reply(
     )
 
     if len(available_results) == 1:
-        # Tek aday varsa CrossEncoder çalıştırmanın
-        # hiçbir faydası yok.
         reranked_results = (
             available_results
         )
-
     else:
         reranked_results = (
             reranker.rerank(
@@ -364,6 +367,12 @@ def generate_reply(
             ].get(
                 "clause",
                 "Bilinmiyor",
+            ),
+            "clause_title": result[
+                "metadata"
+            ].get(
+                "clause_title",
+                "",
             ),
             "status": result[
                 "metadata"
