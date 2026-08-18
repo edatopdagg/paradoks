@@ -10,6 +10,7 @@ class Source(BaseModel):
     code: str
     version: str
     clause: str
+    clause_title: str
     status: str
     source_url: str
     distance: float
