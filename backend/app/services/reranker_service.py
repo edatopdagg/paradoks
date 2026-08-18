@@ -83,7 +83,7 @@ class Reranker:
 
         scores = self.model.predict(
             query_document_pairs,
-            batch_size=1,
+            batch_size=8,
             show_progress_bar=False,
         )
 

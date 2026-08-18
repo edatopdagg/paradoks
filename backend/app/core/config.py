@@ -15,6 +15,10 @@ load_dotenv(
 )
 
 
+# ---------------------------------------------------------
+# EMBEDDING
+# ---------------------------------------------------------
+
 EMBEDDING_MODEL_NAME = os.getenv(
     "EMBEDDING_MODEL_NAME",
     "intfloat/multilingual-e5-small",
@@ -24,6 +28,7 @@ EMBEDDING_MODEL_NAME = os.getenv(
 # ---------------------------------------------------------
 # CHROMA DB
 # ---------------------------------------------------------
+
 _raw_chroma_db_path = os.getenv(
     "CHROMA_DB_PATH",
     "vector_db",
@@ -55,6 +60,7 @@ CHROMA_COLLECTION_NAME = os.getenv(
 # ---------------------------------------------------------
 # EMBEDDING PREFIXES
 # ---------------------------------------------------------
+
 QUERY_PREFIX = os.getenv(
     "QUERY_PREFIX",
     "query: ",
@@ -69,6 +75,7 @@ PASSAGE_PREFIX = os.getenv(
 # ---------------------------------------------------------
 # OLLAMA
 # ---------------------------------------------------------
+
 OLLAMA_BASE_URL = os.getenv(
     "OLLAMA_BASE_URL",
     "http://localhost:11434",
@@ -94,6 +101,7 @@ OLLAMA_TIMEOUT_SECONDS = int(
 # ---------------------------------------------------------
 # RETRIEVAL
 # ---------------------------------------------------------
+
 MAX_RETRIEVAL_DISTANCE = float(
     os.getenv(
         "MAX_RETRIEVAL_DISTANCE",
@@ -105,9 +113,10 @@ MAX_RETRIEVAL_DISTANCE = float(
 # ---------------------------------------------------------
 # RERANKER
 # ---------------------------------------------------------
+
 RERANKER_MODEL_NAME = os.getenv(
     "RERANKER_MODEL_NAME",
-    "BAAI/bge-reranker-v2-m3",
+    "cross-encoder/ms-marco-MiniLM-L-6-v2",
 )
 
 RERANKER_TOP_K = int(

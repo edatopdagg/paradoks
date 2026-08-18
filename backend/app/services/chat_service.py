@@ -75,6 +75,7 @@ def _deduplicate_results(
             continue
 
         seen.add(key)
+
         unique_results.append(
             result
         )
@@ -85,6 +86,10 @@ def _deduplicate_results(
 def _build_blocked_sources(
     blocked_results: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    """
+    Blocked kaynakları API response formatına çevirir.
+    """
+
     return [
         {
             "org": result[
@@ -113,12 +118,31 @@ def _build_blocked_sources(
 def generate_reply(
     message: str,
 ) -> dict[str, Any]:
-    total_start = time.perf_counter()
+    """
+    Paradoks soru-cevap pipeline'ı.
+
+    Akış:
+
+    1. Retrieval
+    2. Status filtreleme
+    3. Duplicate temizleme
+    4. Reranker
+    5. Prompt oluşturma
+    6. Ollama yanıtı
+    7. Kaynak metadata'larını döndürme
+    """
+
+    total_start = (
+        time.perf_counter()
+    )
 
     # ---------------------------------------------------------
     # RETRIEVAL
     # ---------------------------------------------------------
-    retrieval_start = time.perf_counter()
+
+    retrieval_start = (
+        time.perf_counter()
+    )
 
     results = retriever.search(
         query=message,
@@ -129,6 +153,10 @@ def generate_reply(
         time.perf_counter()
         - retrieval_start
     )
+
+    # ---------------------------------------------------------
+    # STATUS FİLTRELEME
+    # ---------------------------------------------------------
 
     available_results = [
         result
@@ -155,6 +183,10 @@ def generate_reply(
         == "blocked"
     ]
 
+    # ---------------------------------------------------------
+    # DUPLICATE TEMİZLEME
+    # ---------------------------------------------------------
+
     available_results = (
         _deduplicate_results(
             available_results
@@ -171,6 +203,10 @@ def generate_reply(
         len(available_results),
     )
 
+    # ---------------------------------------------------------
+    # KULLANILABİLİR KAYNAK YOK
+    # ---------------------------------------------------------
+
     if not available_results:
         total_time = (
             time.perf_counter()
@@ -181,20 +217,27 @@ def generate_reply(
             f"[PERF] Retrieval: "
             f"{retrieval_time:.2f} sn"
         )
+
         print(
             "[PERF] Reranker: 0.00 sn"
         )
+
         print(
             "[PERF] Prompt: 0.00 sn"
         )
+
         print(
             "[PERF] Ollama: 0.00 sn"
         )
+
         print(
             f"[PERF] Total: "
             f"{total_time:.2f} sn"
         )
-        print("-" * 50)
+
+        print(
+            "-" * 50
+        )
 
         return {
             "reply": (
@@ -213,11 +256,14 @@ def generate_reply(
     # ---------------------------------------------------------
     # RERANKER
     # ---------------------------------------------------------
+
     reranker_start = (
         time.perf_counter()
     )
 
-    if len(available_results) == 1:
+    if len(
+        available_results
+    ) == 1:
         reranked_results = (
             available_results
         )
@@ -237,6 +283,7 @@ def generate_reply(
     # ---------------------------------------------------------
     # PROMPT İÇİN SON KAYNAKLAR
     # ---------------------------------------------------------
+
     prompt_results = (
         reranked_results[
             :PROMPT_TOP_K
@@ -251,13 +298,16 @@ def generate_reply(
     # ---------------------------------------------------------
     # PROMPT
     # ---------------------------------------------------------
+
     prompt_start = (
         time.perf_counter()
     )
 
-    user_prompt = build_user_prompt(
-        question=message,
-        chunks=prompt_results,
+    user_prompt = (
+        build_user_prompt(
+            question=message,
+            chunks=prompt_results,
+        )
     )
 
     prompt_time = (
@@ -273,14 +323,17 @@ def generate_reply(
     # ---------------------------------------------------------
     # OLLAMA
     # ---------------------------------------------------------
+
     ollama_start = (
         time.perf_counter()
     )
 
     try:
-        reply = generate_with_ollama(
-            system_prompt=SYSTEM_PROMPT,
-            user_prompt=user_prompt,
+        reply = (
+            generate_with_ollama(
+                system_prompt=SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+            )
         )
 
         ollama_time = (
@@ -324,7 +377,9 @@ def generate_reply(
             f"{total_time:.2f} sn"
         )
 
-        print("-" * 50)
+        print(
+            "-" * 50
+        )
 
         return {
             "reply": (
@@ -342,6 +397,7 @@ def generate_reply(
     # ---------------------------------------------------------
     # SOURCES
     # ---------------------------------------------------------
+
     sources = [
         {
             "org": result[
@@ -403,13 +459,18 @@ def generate_reply(
     # ---------------------------------------------------------
     # TOTAL
     # ---------------------------------------------------------
+
     total_time = (
         time.perf_counter()
         - total_start
     )
 
     print()
-    print("=" * 50)
+
+    print(
+        "=" * 50
+    )
+
     print(
         "[PERF] Paradoks Pipeline"
     )
@@ -439,7 +500,10 @@ def generate_reply(
         f"{total_time:.2f} sn"
     )
 
-    print("=" * 50)
+    print(
+        "=" * 50
+    )
+
     print()
 
     return {
