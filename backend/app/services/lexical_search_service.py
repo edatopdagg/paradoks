@@ -28,10 +28,15 @@ class LexicalSearchService:
     """
 
     def __init__(self) -> None:
-        if not LEXICAL_DB_PATH.exists():
-            raise FileNotFoundError(
-                "Lexical index bulunamadı: "
-                f"{LEXICAL_DB_PATH}"
+        self.available = LEXICAL_DB_PATH.exists()
+
+        if not self.available:
+            print(
+                "[LEXICAL] Uyarı: lexical index bulunamadı:",
+                LEXICAL_DB_PATH,
+            )
+            print(
+                "[LEXICAL] Semantic pipeline çalışmaya devam edecek."
             )
 
     def search_phrase(
@@ -56,6 +61,9 @@ class LexicalSearchService:
         ).strip()
 
         if not clean_phrase:
+            return []
+
+        if not self.available:
             return []
 
         if limit <= 0:
