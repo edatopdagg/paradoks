@@ -99,15 +99,25 @@ SYSTEM_PATTERN = re.compile(
 PROCEDURE_PATTERN = re.compile(
     r"\b("
     r"(?:"
+    # UE/network initiated veya requested teknik adları.
+    r"(?:"
     r"(?:UE|network)[-\s]+initiated"
-    r"\s+"
-    r"(?:[A-Za-z0-9/\-]+\s+){0,4}"
-    r"procedure"
+    r"|UE[-\s]+requested"
+    r"|network[-\s]+requested"
+    r")"
+    r"(?:\s+[A-Za-z0-9/\-]+){0,5}"
+    r"\s+procedure"
     r")"
     r"|"
     r"(?:"
-    r"[A-Za-z0-9/\-]+"
-    r"\s+procedure"
+    # Service Request procedure,
+    # Warning Message Cancel Procedure vb.
+    #
+    # Başlangıçtaki The / A / An teknik adın
+    # parçası değildir.
+    r"(?!(?:The|A|An)\b)"
+    r"(?:[A-Za-z0-9/\-]+\s+){1,3}"
+    r"procedure"
     r")"
     r")\b",
     flags=re.IGNORECASE,
@@ -1710,6 +1720,82 @@ def _is_strong_candidate(
 # DOCUMENT HELPERS
 # =========================================================
 
+def _document_query_alignment_score(
+    query_variants: list[str],
+    text: str,
+) -> float:
+    """
+    QueryNormalizer'ın ürettiği teknik doküman sorgularının
+    kaynak chunk ile ne kadar doğrudan eşleştiğini ölçer.
+
+    Özellikle:
+    - QUIC loss detection / congestion control
+    - HTTP/3 RFC specification
+    gibi sorularda doğru RFC chunk'ını strong evidence
+    olarak öne çıkarmak için kullanılır.
+    """
+
+    normalized_text = _canonicalize(
+        text
+    )
+
+    if not normalized_text:
+        return 0.0
+
+    text_tokens = _tokenize(
+        normalized_text
+    )
+
+    best_score = 0.0
+
+    # İlk varyant orijinal kullanıcı sorusu.
+    # Burada teknik expansion'lara öncelik veriyoruz.
+    for query_variant in query_variants[1:]:
+        query_value = _canonicalize(
+            query_variant
+        )
+
+        if not query_value:
+            continue
+
+        # Birebir teknik ifade chunk içinde bulunuyorsa
+        # çok güçlü kanıt.
+        if query_value in normalized_text:
+            best_score = max(
+                best_score,
+                8.0,
+            )
+            continue
+
+        query_tokens = _tokenize(
+            query_value
+        )
+
+        # Çok kısa/generic sorgular belge seçmek için
+        # yeterince güvenilir değildir.
+        if len(query_tokens) < 3:
+            continue
+
+        overlap = len(
+            query_tokens
+            & text_tokens
+        )
+
+        if overlap < 2:
+            continue
+
+        coverage = (
+            overlap
+            / len(query_tokens)
+        )
+
+        best_score = max(
+            best_score,
+            coverage * 5.0,
+        )
+
+    return best_score
+
 def _format_document_candidate(
     org: str,
     code: str,
@@ -2044,6 +2130,13 @@ def compose_answer_evidence(
                 )
             )
 
+            query_alignment = (
+                _document_query_alignment_score(
+                    query_variants,
+                    text,
+                )
+            )
+
             score = (
                 5.0
                 - min(
@@ -2051,6 +2144,7 @@ def compose_answer_evidence(
                     3,
                 )
                 + directness
+                + query_alignment
             )
 
             candidate_scores[
@@ -2061,6 +2155,7 @@ def compose_answer_evidence(
                 "occurrences": 1,
                 "strong_evidence": (
                     directness >= 4.0
+                    or query_alignment >= 4.0
                 ),
             }
 

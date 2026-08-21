@@ -96,6 +96,24 @@ HIGH_PRECISION_RULES: list[
         ),
     ),
 
+        # -----------------------------------------------------
+    # QUIC LOSS DETECTION / RECOVERY / CONGESTION CONTROL
+    # -----------------------------------------------------
+
+    (
+        (
+            r"\bquic\b.*\bkayıp\b",
+            r"\bquic\b.*\bloss\b",
+            r"\bquic\b.*\bcongestion\b",
+            r"\bquic\b.*\brecovery\b",
+        ),
+        (
+            "QUIC loss detection and congestion control",
+            "loss detection and congestion control for QUIC",
+            "QUIC loss detection and recovery",
+        ),
+    ),
+
     # -----------------------------------------------------
     # QUIC CORE RFC / SPECIFICATION
     # -----------------------------------------------------
@@ -112,6 +130,23 @@ HIGH_PRECISION_RULES: list[
             "QUIC version 1 core protocol",
             "core QUIC transport protocol specification",
             "document defines version 1 of QUIC",
+        ),
+    ),
+
+        # -----------------------------------------------------
+    # HTTP/3 RFC / SPECIFICATION
+    # -----------------------------------------------------
+
+    (
+        (
+            r"\bhttp/?3\b.*\brfc\b",
+            r"\bhttp/?3\b.*\btanımlan\w*",
+            r"\bhttp/?3\b.*\bhangi(?:\s+\w+){0,2}\s+(?:rfc|standart|doküman)",
+        ),
+        (
+            "This document defines HTTP/3",
+            "HTTP/3 RFC specification",
+            "HTTP/3 Protocol Overview",
         ),
     ),
 
@@ -155,6 +190,9 @@ CONCEPT_RULES: list[
             r"\bderegistration\b",
             r"\bde-registration\b",
             r"\bdetach\w*",
+            r"\b5gs['’]?(?:ten|den)(?:\s+\w+){0,5}\s+ayrıl\w*",
+            r"\bşebekeden(?:\s+\w+){0,5}\s+ayrıl\w*",
+            r"\bnetwork(?:ten|den)?(?:\s+\w+){0,5}\s+ayrıl\w*",
         ),
         (
             "UE deregistration procedure",
@@ -212,6 +250,9 @@ CONCEPT_RULES: list[
             r"\bservis\s+talep\w*",
             r"\bbağlantıyı(?:\s+\w+){0,3}\s+tekrar\s+kur\w*",
             r"\btekrar\s+aktif\w*",
+            r"\bbağlantı(?:yı|yi|yu|yü)?(?:\s+\w+){0,5}\s+yeniden\s+etkinleştir\w*",
+            r"\buplink\b.*\byeniden\s+etkinleştir\w*",
+            r"\buplink\b.*\bservice\s+request\b",
         ),
         (
             "UE triggered Service Request",
@@ -251,12 +292,15 @@ CONCEPT_RULES: list[
             r"\bdata\s+oturumu.*\baç\w*",
             r"\bveri\s+oturumu.*\baç\w*",
             r"\binternet\s+oturumu.*\baç\w*",
+            r"\bpdu\s+session.*\boluştur\w*",
+            r"\bpdu\s+session.*\bbaşlat\w*",
         ),
-        (
-            "PDU Session Establishment",
-            "UE Requested PDU Session Establishment",
-        ),
-    ),
+            (
+                "PDU Session Establishment",
+                "UE-requested PDU session establishment procedure",
+                "UE Requested PDU Session Establishment",
+            ),
+),
 
     # -----------------------------------------------------
     # HANDOVER / MOBILITY
@@ -298,6 +342,25 @@ CONCEPT_RULES: list[
             ),
             "5G Multicast-Broadcast Services architecture",
             "Architecture for 5G multicast-broadcast services",
+        ),
+    ),
+
+        # -----------------------------------------------------
+    # CELL BROADCAST WARNING MESSAGE CANCELLATION
+    # -----------------------------------------------------
+
+    (
+        (
+            r"\bcell\s+broadcast\b.*\biptal\w*",
+            r"\bcell\s+broadcast\b.*\bcancel\w*",
+            r"\bwarning\s+message\b.*\biptal\w*",
+            r"\bwarning\s+message\b.*\bcancel\w*",
+            r"\buyarı\s+mesaj\w*.*\biptal\w*",
+        ),
+        (
+            "Warning Message Cancel Procedure",
+            "Stop Warning Request",
+            "Cell Broadcast warning message cancellation",
         ),
     ),
 
@@ -481,6 +544,8 @@ class QueryNormalizer:
                 r"\bderegistration",
                 r"\bde-registration",
                 r"\bdetach",
+                r"\b5gs['’]?(?:ten|den)(?:\s+\w+){0,5}\s+ayrıl\w*",
+                r"\bşebekeden(?:\s+\w+){0,5}\s+ayrıl\w*",
             )
         )
 

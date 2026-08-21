@@ -129,9 +129,10 @@ def infer_answer_type(
 
         (
             (
-                r"\bhangi(?:\s+\w+){0,3}\s+prosedür\w*",
-                r"\bprocedure\b",
-                r"\bprosedür\b",
+                r"\bhangi prosedür",
+                r"\bprocedure",
+                r"\bnasıl(?:\s+\w+){0,5}\s+iptal\w*",
+                r"\bnasıl(?:\s+\w+){0,5}\s+durdur\w*",
             ),
             "PROSEDÜR",
         ),
