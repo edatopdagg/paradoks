@@ -1,14 +1,20 @@
-# Python sanal ortamı
+﻿# Python virtual environment
 backend/.venv/
 
-# Python cache dosyaları
+# Python cache
 __pycache__/
 *.pyc
+*.pyo
 
-# Ortam değişkenleri
+# Environment variables
 .env
 
-# VS Code ayarları
+# IDE settings
 .vscode/
 
+# Generated / local vector databases
 backend/vector_db/
+backend/vector_db_*/
+
+# Generated lexical index
+backend/data/lexical_index.db
