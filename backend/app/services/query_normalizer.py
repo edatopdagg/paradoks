@@ -115,6 +115,117 @@ HIGH_PRECISION_RULES: list[
     ),
 
     # -----------------------------------------------------
+    # NGAP DOCUMENT / SPECIFICATION
+    # -----------------------------------------------------
+
+    (
+        (
+            r"\bngap\b.*\b(?:standart|standard|specification)\w*",
+            r"\bngap\b.*\btanımlan\w*",
+        ),
+        (
+            "NG Application Protocol NGAP specification",
+            "NGAP protocol is defined in 3GPP TS",
+            "NG-RAN NG interface NG application protocol",
+        ),
+    ),
+
+    # -----------------------------------------------------
+    # 5G SYSTEM ARCHITECTURE DOCUMENT
+    # -----------------------------------------------------
+
+    (
+        (
+            r"\b5g(?:s|\s+system)?\b.*\barchitecture\b.*\b(?:standart|standard)\w*",
+            r"\b5g(?:s|\s+system)?\b.*\bmimari\w*.*\b(?:standart|standard)\w*",
+        ),
+        (
+            "System Architecture for the 5G System Stage 2",
+            "Stage 2 system architecture for the 5G System",
+            "present document defines the Stage 2 system architecture for the 5G System",
+        ),
+    ),
+
+    # -----------------------------------------------------
+    # 5G SYSTEM PROCEDURES DOCUMENT
+    # -----------------------------------------------------
+
+    (
+        (
+            r"\b5g(?:s|\s+system)?\b.*\bprosedür\w*.*\b(?:standart|standard)\w*",
+            r"\b5g(?:s|\s+system)?\b.*\bprocedures?\b.*\b(?:standart|standard)\w*",
+        ),
+        (
+            "Procedures for the 5G System Stage 2",
+            "5G System stage 2 procedures and flows",
+            "Procedures for the 5G System",
+        ),
+    ),
+
+    # -----------------------------------------------------
+    # QUIC + TLS
+    # -----------------------------------------------------
+
+    (
+        (
+            r"\bquic\b.*\btls\b",
+            r"\btls\b.*\bquic\b",
+        ),
+        (
+            "Using TLS to Secure QUIC",
+            "QUIC TLS security",
+            "QUIC TLS handshake",
+        ),
+    ),
+
+    # -----------------------------------------------------
+    # QUIC VERSION-INDEPENDENT PROPERTIES
+    # -----------------------------------------------------
+
+    (
+        (
+            r"\bquic\b.*\bversion-independent\b",
+            r"\bquic\b.*\binvariants?\b",
+        ),
+        (
+            "Version-Independent Properties of QUIC",
+            "QUIC-INVARIANTS",
+            "version-independent properties of QUIC",
+        ),
+    ),
+
+    # -----------------------------------------------------
+    # QPACK
+    # -----------------------------------------------------
+
+    (
+        (
+            r"\bqpack\b",
+        ),
+        (
+            "QPACK Field Compression for HTTP/3",
+            "QPACK",
+            "QPACK field compression",
+        ),
+    ),
+
+    # -----------------------------------------------------
+    # WEBSOCKETS OVER HTTP/3
+    # -----------------------------------------------------
+
+    (
+        (
+            r"\bwebsockets?\b.*\bhttp/?3\b",
+            r"\bhttp/?3\b.*\bwebsockets?\b",
+        ),
+        (
+            "Bootstrapping WebSockets with HTTP/3",
+            "WebSockets Upgrade over HTTP/3",
+            "WebSockets HTTP/3",
+        ),
+    ),
+
+    # -----------------------------------------------------
     # QUIC CORE RFC / SPECIFICATION
     # -----------------------------------------------------
 

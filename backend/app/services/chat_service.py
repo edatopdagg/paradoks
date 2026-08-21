@@ -23,6 +23,7 @@ from app.services.ollama_service import (
 from app.services.prompt_builder import (
     SYSTEM_PROMPT,
     build_user_prompt,
+    infer_answer_type,
 )
 
 from app.services.lexical_search_service import (
@@ -54,21 +55,15 @@ PROMPT_TOP_K = 2
 # çalışır.
 # =========================================================
 
-FALLBACK_CHROMA_RESULTS_PER_QUERY = 12
-
-# Her teknik query varyantından alınabilecek
-# en fazla candidate.
-FALLBACK_KEEP_PER_QUERY = 5
-
-# İkinci retrieval sonrasında reranker'a
-# gönderilecek maksimum candidate.
-FALLBACK_RERANK_TOP_K = 6
-
-# Composer fallback sırasında biraz daha fazla
-# evidence görebilir.
-#
-# Bu normal pipeline'ın top-k değerini değiştirmez.
+# Composer fallback sırasında normal soru türleri için
+# sınırlı evidence kullanılır.
 FALLBACK_COMPOSER_TOP_K = 4
+
+# Doküman/RFC discovery sorularında aynı dokümanın
+# birden fazla chunk'taki kanıtını Composer'ın birlikte
+# görebilmesi gerekir. Bu yüzden yalnızca bu cevap türünde
+# daha geniş bir lexical evidence havuzu kullanılır.
+DOCUMENT_FALLBACK_COMPOSER_TOP_K = 20
 
 
 # =========================================================
@@ -241,57 +236,105 @@ def _build_blocked_sources(
 def _build_sources(
     results: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    return [
-        {
-            "org": result[
-                "metadata"
-            ].get(
+    """
+    Frontend'e gönderilen kaynak kartlarını metadata bazında
+    tekilleştirir.
+
+    Aynı doküman / sürüm / madde farklı chunk metinleriyle
+    birkaç kez dönmüş olsa bile kullanıcı aynı kaynak kartını
+    tekrar tekrar görmez.
+    """
+
+    sources: list[dict[str, Any]] = []
+
+    seen: set[
+        tuple[str, str, str, str, str]
+    ] = set()
+
+    for result in results:
+        metadata = result.get(
+            "metadata",
+            {},
+        )
+
+        org = str(
+            metadata.get(
                 "org",
                 "Bilinmiyor",
-            ),
-            "code": result[
-                "metadata"
-            ].get(
+            )
+            or "Bilinmiyor"
+        )
+
+        code = str(
+            metadata.get(
                 "code",
                 "Bilinmiyor",
-            ),
-            "version": result[
-                "metadata"
-            ].get(
+            )
+            or "Bilinmiyor"
+        )
+
+        version = str(
+            metadata.get(
                 "version",
                 "Bilinmiyor",
-            ),
-            "clause": result[
-                "metadata"
-            ].get(
+            )
+            or "Bilinmiyor"
+        )
+
+        clause = str(
+            metadata.get(
                 "clause",
                 "Bilinmiyor",
-            ),
-            "clause_title": result[
-                "metadata"
-            ].get(
-                "clause_title",
-                "",
-            ),
-            "status": result[
-                "metadata"
-            ].get(
-                "status",
-                "Bilinmiyor",
-            ),
-            "source_url": result[
-                "metadata"
-            ].get(
+            )
+            or "Bilinmiyor"
+        )
+
+        source_url = str(
+            metadata.get(
                 "source_url",
                 "",
-            ),
-            "distance": result.get(
-                "distance",
-                0.0,
-            ),
-        }
-        for result in results
-    ]
+            )
+            or ""
+        )
+
+        key = (
+            org.casefold(),
+            code.casefold(),
+            version.casefold(),
+            clause.casefold(),
+            source_url.casefold(),
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(
+            key
+        )
+
+        sources.append(
+            {
+                "org": org,
+                "code": code,
+                "version": version,
+                "clause": clause,
+                "clause_title": metadata.get(
+                    "clause_title",
+                    "",
+                ),
+                "status": metadata.get(
+                    "status",
+                    "Bilinmiyor",
+                ),
+                "source_url": source_url,
+                "distance": result.get(
+                    "distance",
+                    0.0,
+                ),
+            }
+        )
+
+    return sources
 
 
 # =========================================================
@@ -485,8 +528,18 @@ def _precision_fallback_phrases(
         in normalized_question
     )
 
+    specialized_http3_subject = any(
+        value
+        in normalized_question
+        for value in (
+            "websocket",
+            "qpack",
+        )
+    )
+
     if (
         http3_intent
+        and not specialized_http3_subject
         and any(
             value
             in normalized_question
@@ -568,6 +621,112 @@ def _precision_fallback_phrases(
 
     return []
 
+def _is_reference_point_question(
+    question: str,
+) -> bool:
+    value = (
+        question
+        or ""
+    ).casefold()
+
+    return (
+        "referans nokta"
+        in value
+        or
+        "reference point"
+        in value
+    )
+
+
+def _reference_point_fts_query(
+    question: str,
+) -> str | None:
+    """
+    Sorudaki iki endpoint'ten genel bir
+    reference-point FTS sorgusu üretir.
+
+    N1/N3/N4/N11/N12 gibi cevaplar burada
+    bilinmez veya hard-code edilmez.
+    """
+
+    tokens = re.findall(
+        r"\b(?:NG-RAN|[A-Z]{2,}(?:-[A-Z0-9]+)*)\b",
+        question or "",
+    )
+
+    excluded = {
+        "5G",
+        "5GS",
+        "TS",
+        "TR",
+        "RFC",
+        "REFERENCE",
+        "POINT",
+        "INTERFACE",
+    }
+
+    endpoints: list[str] = []
+
+    for token in tokens:
+        if token in excluded:
+            continue
+
+        if token not in endpoints:
+            endpoints.append(
+                token
+            )
+
+    if len(endpoints) < 2:
+        return None
+
+    first = endpoints[0]
+    second = endpoints[1]
+
+    # Standartlarda erişim tarafı bazen
+    # NG-RAN, RAN veya (R)AN yazılabiliyor.
+    if first in {
+        "NG-RAN",
+        "RAN",
+    }:
+        return (
+            '"reference point between" '
+            f'AND "{second}"'
+        )
+
+    if second in {
+        "NG-RAN",
+        "RAN",
+    }:
+        return (
+            '"reference point between" '
+            f'AND "{first}"'
+        )
+
+    return (
+        '"reference point" '
+        f'AND "{first}" '
+        f'AND "{second}"'
+    )
+
+
+
+def _is_document_question(
+    question: str,
+) -> bool:
+    """
+    Kullanıcının doğrudan bir standart / RFC / doküman
+    kimliği sorduğu soruları ayırır.
+
+    Cevap numarası burada bilinmez; yalnızca cevap türü
+    belirlenir.
+    """
+
+    return (
+        infer_answer_type(
+            question
+        )
+        == "STANDART / DOKÜMAN"
+    )
 
 def _needs_targeted_fallback(
     question: str,
@@ -579,6 +738,11 @@ def _needs_targeted_fallback(
     yalnızca gerçekten ihtiyaç duyulan sorularda
     ikinci retrieval çalıştırır.
     """
+    if _is_reference_point_question(
+        question
+    ):
+        return True
+
     precision_phrases = (
         _precision_fallback_phrases(
             question
@@ -586,6 +750,16 @@ def _needs_targeted_fallback(
     )
 
     if precision_phrases:
+        return True
+
+    # Standart / RFC / doküman kimliği sorularında
+    # normal semantic retrieval doğru cevabı verse bile
+    # başka bir dokümanın References/Overview maddesine
+    # kayma riski yüksek. Precision route'u olmayan
+    # document soruları lexical document discovery'ye gider.
+    if _is_document_question(
+        question
+    ):
         return True
 
     answer_type = str(
@@ -618,29 +792,6 @@ def _needs_targeted_fallback(
     )
 
     # -----------------------------------------------------
-    # EXPLICIT RFC QUESTIONS
-    # -----------------------------------------------------
-    #
-    # Bir protokolün hangi RFC'de tanımlandığını soran
-    # sorgularda secondary RFC'ler semantic olarak ana
-    # RFC'den daha yüksek gelebiliyor.
-    #
-    # Bu nedenle yalnızca explicit RFC sorularında
-    # answer-free teknik query'lerle ikinci pass yapılır.
-    # -----------------------------------------------------
-
-    if (
-        answer_type
-        == "STANDART / DOKÜMAN"
-        and re.search(
-            r"\brfc\b",
-            question or "",
-            flags=re.IGNORECASE,
-        )
-    ):
-        return True
-
-    # -----------------------------------------------------
     # VALUE IDENTIFIER ECHO
     # -----------------------------------------------------
 
@@ -660,11 +811,7 @@ def _needs_targeted_fallback(
     # -----------------------------------------------------
 
     if (
-        answer_type
-        in {
-            "STANDART / DOKÜMAN",
-            "DEĞER / LİMİT",
-        }
+        answer_type == "DEĞER / LİMİT"
         and (
             confidence != "high"
             or not renderer_success
@@ -679,256 +826,20 @@ def _needs_targeted_fallback(
 # TARGETED SECOND-PASS RETRIEVAL
 # =========================================================
 
-def _extract_fallback_anchors(
-    question: str,
-) -> list[str]:
-    """
-    Sorudaki güçlü teknik identifier / acronym'leri çıkarır.
-
-    Örnek:
-        E.164
-        G.711
-        H.248
-        HTTP/3
-        QUIC
-        5QI
-
-    Bu liste cevap içermez.
-    Yalnızca kullanıcının yazdığı teknik anchor'ları kullanır.
-    """
-
-    text = (
-        question
-        or ""
-    ).strip()
-
-    anchors: list[str] = []
-
-    patterns = [
-        # ITU tarzı identifier:
-        # E.164, G.711, H.248
-        r"\b[A-Za-z]\.\d+(?:\.\d+)*\b",
-
-        # HTTP/3 gibi slash identifier
-        r"\b[A-Za-z][A-Za-z0-9\-]*/\d+\b",
-
-        # 5QI vb.
-        r"\b\d[A-Z]{2,8}\b",
-    ]
-
-    for pattern in patterns:
-        for match in re.findall(
-            pattern,
-            text,
-            flags=re.IGNORECASE,
-        ):
-            clean = (
-                match
-                or ""
-            ).strip()
-
-            if (
-                clean
-                and clean.casefold()
-                not in {
-                    item.casefold()
-                    for item in anchors
-                }
-            ):
-                anchors.append(
-                    clean
-                )
-
-    # RFC sorularında QUIC gibi teknik acronym de
-    # güçlü anchor olarak kullanılabilir.
-    if re.search(
-        r"\brfc\b",
-        text,
-        flags=re.IGNORECASE,
-    ):
-        acronyms = re.findall(
-            r"\b[A-Z][A-Z0-9\-]{2,12}\b",
-            text,
-        )
-
-        for acronym in acronyms:
-            if acronym in {
-                "RFC",
-                "IETF",
-                "TS",
-                "TR",
-            }:
-                continue
-
-            if (
-                acronym.casefold()
-                not in {
-                    item.casefold()
-                    for item in anchors
-                }
-            ):
-                anchors.append(
-                    acronym
-                )
-
-    return anchors
-
-
-def _exact_anchor_candidates(
+def _document_fallback_candidates(
     question: str,
 ) -> list[dict[str, Any]]:
     """
-    Teknik identifier geçen chunk'ları doğrudan DB'den toplar.
+    Standart / RFC sorularında QueryNormalizer'ın teknik
+    expansion'larını FTS5 üzerinde arar.
 
-    Semantic similarity kullanılmaz.
-
-    Amaç:
-        E.164 gibi güçlü teknik identifier'ların
-        "number", "length" gibi genel kelimeler tarafından
-        bastırılmasını önlemek.
-    """
-
-    anchors = (
-        _extract_fallback_anchors(
-            question
-        )
-    )
-
-    if not anchors:
-        return []
-
-    print(
-        "[FALLBACK] Exact anchor:",
-        anchors,
-    )
-
-    candidates: list[
-        dict[str, Any]
-    ] = []
-
-    seen: set[
-        tuple[str, str, str, str]
-    ] = set()
-
-    for anchor in anchors:
-        result = (
-            retriever.collection.get(
-                where_document={
-                    "$contains": anchor
-                },
-                limit=200,
-                include=[
-                    "documents",
-                    "metadatas",
-                ],
-            )
-        )
-
-        for (
-            chunk_id,
-            document,
-            metadata,
-        ) in zip(
-            result.get(
-                "ids",
-                [],
-            ),
-            result.get(
-                "documents",
-                [],
-            ),
-            result.get(
-                "metadatas",
-                [],
-            ),
-        ):
-            clean_text = (
-                document
-                or ""
-            ).strip()
-
-            clean_metadata = (
-                metadata
-                or {}
-            )
-
-            if not clean_text:
-                continue
-
-            if clean_metadata.get(
-                "status"
-            ) not in {
-                "available",
-                "indexed",
-            }:
-                continue
-
-            key = (
-                str(
-                    clean_metadata.get(
-                        "org",
-                        "",
-                    )
-                ),
-                str(
-                    clean_metadata.get(
-                        "code",
-                        "",
-                    )
-                ),
-                str(
-                    clean_metadata.get(
-                        "clause",
-                        "",
-                    )
-                ),
-                clean_text,
-            )
-
-            if key in seen:
-                continue
-
-            seen.add(
-                key
-            )
-
-            candidates.append(
-                {
-                    "chunk_id": (
-                        chunk_id
-                    ),
-                    "text": (
-                        clean_text
-                    ),
-                    "metadata": (
-                        clean_metadata
-                    ),
-
-                    # collection.get distance üretmez.
-                    # Reranker için buna ihtiyaç yok.
-                    "distance": 0.0,
-                }
-            )
-
-    print(
-        "[FALLBACK] Exact-anchor aday:",
-        len(candidates),
-    )
-
-    return candidates
-
-def _exact_phrase_candidates(
-    question: str,
-) -> list[dict[str, Any]]:
-    """
-    Teknik query varyantlarını önce hızlı semantic
-    aramayla küçük bir aday havuzuna indirir.
-
-    Ardından yalnızca bu küçük havuzda exact phrase
-    kontrolü yapılır.
-
-    Böylece 410K+ chunk üzerinde where_document
-    full scan yapılmaz.
+    Önemli fark:
+    - Orijinal doğal dil sorusu yerine teknik expansion'lar
+      tercih edilir.
+    - Sonuçlar global bm25 ile yeniden sıralanmaz.
+      Variant sırası korunur; Composer böylece aynı
+      dokümana ait tekrarlayan kanıtları birlikte görür.
+    - Cevap numarası hard-code edilmez.
     """
 
     search_queries = (
@@ -943,240 +854,492 @@ def _exact_phrase_candidates(
     phrase_queries = (
         search_queries[1:]
         if len(search_queries) > 1
-        else []
+        else search_queries
     )
 
     if not phrase_queries:
         return []
 
     print(
-        "[FALLBACK] Exact phrase sorguları:",
+        "[FALLBACK] Document discovery sorguları:",
         phrase_queries,
     )
 
-    # -----------------------------------------------------
-    # 1. PHRASE'LERİ TEK BATCH'TE EMBED ET
-    # -----------------------------------------------------
+    candidates: list[
+        dict[str, Any]
+    ] = []
 
-    embeddings = (
-        retriever
-        .embedding_service
-        .embed_queries(
-            phrase_queries
-        )
-    )
+    seen_chunk_ids: set[str] = set()
 
-    # -----------------------------------------------------
-    # 2. SADECE KÜÇÜK SEMANTIC ADAY HAVUZU
-    # -----------------------------------------------------
-    #
-    # 410K dokümanı text scan etmek yerine,
-    # her phrase için en yakın 60 chunk alınır.
-    # -----------------------------------------------------
-
-    result = (
-        retriever.collection.query(
-            query_embeddings=embeddings,
-            n_results=60,
-            include=[
-                "documents",
-                "metadatas",
-                "distances",
-            ],
-        )
-    )
-
-    all_ids = result.get(
-        "ids",
-        [],
-    )
-
-    all_documents = result.get(
-        "documents",
-        [],
-    )
-
-    all_metadatas = result.get(
-        "metadatas",
-        [],
-    )
-
-    all_distances = result.get(
-        "distances",
-        [],
-    )
-
-    candidates: dict[
-        tuple[str, str, str, str],
-        dict[str, Any],
-    ] = {}
-
-    # -----------------------------------------------------
-    # 3. SADECE BU 60'LAR İÇİNDE EXACT PHRASE KONTROLÜ
-    # -----------------------------------------------------
-
-    for query_index, phrase in enumerate(
-        phrase_queries
-    ):
-        if query_index >= len(all_ids):
-            continue
-
-        phrase_normalized = (
-            phrase
-            .casefold()
-            .strip()
+    for phrase in phrase_queries:
+        results = (
+            lexical_search.search_phrase(
+                phrase=phrase,
+                limit=10,
+            )
         )
 
-        ids = all_ids[
-            query_index
-        ]
+        print(
+            f"[FALLBACK] Document hit "
+            f"'{phrase}': "
+            f"{len(results)}"
+        )
 
-        documents = all_documents[
-            query_index
-        ]
-
-        metadatas = all_metadatas[
-            query_index
-        ]
-
-        distances = all_distances[
-            query_index
-        ]
-
-        phrase_hit_count = 0
-
-        for (
-            chunk_id,
-            document,
-            metadata,
-            distance,
-        ) in zip(
-            ids,
-            documents,
-            metadatas,
-            distances,
-        ):
-            text = (
-                document
-                or ""
-            ).strip()
-
-            clean_metadata = (
-                metadata
-                or {}
-            )
-
-            if not text:
-                continue
-
-            if clean_metadata.get(
-                "status"
-            ) not in {
-                "available",
-                "indexed",
-            }:
-                continue
-
-            # Exact phrase yalnızca küçük semantic
-            # aday havuzunda kontrol edilir.
-            if (
-                phrase_normalized
-                not in text.casefold()
-            ):
-                continue
-
-            phrase_hit_count += 1
-
-            key = (
-                str(
-                    clean_metadata.get(
-                        "org",
-                        "",
-                    )
-                ),
-                str(
-                    clean_metadata.get(
-                        "code",
-                        "",
-                    )
-                ),
-                str(
-                    clean_metadata.get(
-                        "clause",
-                        "",
-                    )
-                ),
-                text,
-            )
-
-            distance_value = (
-                float(distance)
-                if distance is not None
-                else 1.0
-            )
-
-            existing = (
-                candidates.get(
-                    key
+        for result in results:
+            chunk_id = str(
+                result.get(
+                    "chunk_id",
+                    "",
                 )
             )
 
-            if existing is None:
-                candidates[
-                    key
-                ] = {
-                    "chunk_id": chunk_id,
-                    "text": text,
-                    "metadata": (
-                        clean_metadata
-                    ),
-                    "distance": (
-                        distance_value
-                    ),
-                    "exact_phrase_hits": 1,
-                }
+            if (
+                chunk_id
+                and chunk_id in seen_chunk_ids
+            ):
+                continue
 
-            else:
-                existing[
-                    "exact_phrase_hits"
-                ] += 1
+            if chunk_id:
+                seen_chunk_ids.add(
+                    chunk_id
+                )
 
-                if (
-                    distance_value
-                    < existing[
-                        "distance"
-                    ]
-                ):
-                    existing[
-                        "distance"
-                    ] = (
-                        distance_value
-                    )
-
-        print(
-            f"[FALLBACK] Phrase hit "
-            f"'{phrase}': "
-            f"{phrase_hit_count}"
-        )
-
-    ranked = sorted(
-        candidates.values(),
-        key=lambda item: (
-            -item[
-                "exact_phrase_hits"
-            ],
-            item[
-                "distance"
-            ],
-        ),
-    )
+            candidates.append(
+                result
+            )
 
     print(
-        "[FALLBACK] Exact phrase toplam aday:",
-        len(ranked),
+        "[FALLBACK] Document toplam unique aday:",
+        len(candidates),
     )
 
-    return ranked
+    return candidates[
+        :DOCUMENT_FALLBACK_COMPOSER_TOP_K
+    ]
+
+
+def _parse_primary_document_identity(
+    primary_answer: str,
+) -> tuple[str, str] | None:
+    """
+    Composer'ın doküman cevabını Chroma metadata
+    kimliğine çevirir.
+
+    Örnek:
+        RFC 9204
+            -> ("IETF", "9204")
+
+        3GPP TS 23.502
+            -> ("3GPP", "TS 23.502")
+    """
+
+    answer = (
+        primary_answer
+        or ""
+    ).strip()
+
+    if not answer:
+        return None
+
+    rfc_match = re.fullmatch(
+        r"RFC\s+(\d+)",
+        answer,
+        flags=re.IGNORECASE,
+    )
+
+    if rfc_match:
+        return (
+            "IETF",
+            rfc_match.group(1),
+        )
+
+    spec_match = re.fullmatch(
+        r"(3GPP|ETSI)\s+(TS|TR)\s+([\d.]+)",
+        answer,
+        flags=re.IGNORECASE,
+    )
+
+    if spec_match:
+        return (
+            spec_match.group(1).upper(),
+            (
+                f"{spec_match.group(2).upper()} "
+                f"{spec_match.group(3)}"
+            ),
+        )
+
+    return None
+
+
+def _document_source_quality_score(
+    result: dict[str, Any],
+) -> float:
+    """
+    Dokümanın kendisini tanımlayan maddeleri kaynak kartında
+    öne çıkarır.
+
+    Scope / Introduction / Overview ve "this/present document"
+    türü self-definition ifadeleri güçlüdür. References bölümleri
+    ise doküman kimliğini göstermek için daha zayıf kanıttır.
+    """
+
+    metadata = result.get(
+        "metadata",
+        {},
+    )
+
+    clause_title = str(
+        metadata.get(
+            "clause_title",
+            "",
+        )
+        or ""
+    ).casefold()
+
+    text = str(
+        result.get(
+            "text",
+            "",
+        )
+        or ""
+    ).casefold()
+
+    score = 0.0
+
+    if "scope" in clause_title:
+        score += 10.0
+
+    if any(
+        value in clause_title
+        for value in (
+            "introduction",
+            "overview",
+        )
+    ):
+        score += 7.0
+
+    if "reference" in clause_title:
+        score -= 10.0
+
+    if re.search(
+        r"\b(?:this document|the present document)\s+"
+        r"(?:defines|specifies|describes)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        score += 10.0
+
+    return score
+
+
+def _fetch_primary_document_sources(
+    question: str,
+    primary_answer: str,
+    limit: int = 4,
+) -> list[dict[str, Any]]:
+    """
+    Composer doğru doküman kimliğini cross-reference
+    üzerinden bulmuş olsa bile lexical candidate havuzunda
+    hedef dokümanın kendi chunk'ları bulunmayabilir.
+
+    Bu durumda hedef dokümanı metadata ile doğrudan Chroma'dan
+    bulur ve yalnızca kaynak gösterimi için en ilgili chunk'ları
+    seçer.
+
+    Hedef doküman DB'de yoksa boş liste döner.
+    Örneğin RFC 8999 yerel indexte yoksa mevcut cross-reference
+    kaynağı kullanılmaya devam eder.
+    """
+
+    identity = (
+        _parse_primary_document_identity(
+            primary_answer
+        )
+    )
+
+    if identity is None:
+        return []
+
+    org, code = identity
+
+    try:
+        result = (
+            retriever.collection.get(
+                where={
+                    "$and": [
+                        {"org": org},
+                        {"code": code},
+                    ]
+                },
+                limit=40,
+                include=[
+                    "documents",
+                    "metadatas",
+                ],
+            )
+        )
+    except Exception as error:
+        print(
+            "[SOURCE] Primary document lookup failed:",
+            error,
+        )
+        return []
+
+    candidates: list[
+        dict[str, Any]
+    ] = []
+
+    for (
+        chunk_id,
+        document,
+        metadata,
+    ) in zip(
+        result.get(
+            "ids",
+            [],
+        ),
+        result.get(
+            "documents",
+            [],
+        ),
+        result.get(
+            "metadatas",
+            [],
+        ),
+    ):
+        clean_text = (
+            document
+            or ""
+        ).strip()
+
+        clean_metadata = (
+            metadata
+            or {}
+        )
+
+        if not clean_text:
+            continue
+
+        if clean_metadata.get(
+            "status"
+        ) not in {
+            "available",
+            "indexed",
+        }:
+            continue
+
+        candidates.append(
+            {
+                "chunk_id": chunk_id,
+                "text": clean_text,
+                "metadata": clean_metadata,
+                "distance": 0.0,
+            }
+        )
+
+    candidates = (
+        _deduplicate_results(
+            candidates
+        )
+    )
+
+    if not candidates:
+        return []
+
+    # Doküman kimliği sorularında References maddesinden ziyade
+    # Scope / Introduction / Overview gibi dokümanın kendi kapsamını
+    # tanımlayan bölümleri tercih et.
+    quality_candidates = [
+        candidate
+        for candidate in candidates
+        if _document_source_quality_score(
+            candidate
+        ) > 0.0
+    ]
+
+    rerank_pool = (
+        quality_candidates
+        if quality_candidates
+        else candidates
+    )
+
+    if len(rerank_pool) == 1:
+        return rerank_pool[:limit]
+
+    try:
+        ranked = reranker.rerank(
+            query=question,
+            candidates=rerank_pool,
+            top_k=min(
+                limit,
+                len(rerank_pool),
+            ),
+        )
+
+        if ranked:
+            return sorted(
+                ranked,
+                key=_document_source_quality_score,
+                reverse=True,
+            )[:limit]
+
+    except Exception as error:
+        print(
+            "[SOURCE] Primary document rerank failed:",
+            error,
+        )
+
+    return sorted(
+        rerank_pool,
+        key=_document_source_quality_score,
+        reverse=True,
+    )[:limit]
+
+
+def _select_document_source_results(
+    results: list[dict[str, Any]],
+    primary_answer: str,
+    question: str = "",
+    limit: int = 4,
+) -> list[dict[str, Any]]:
+    """
+    Document Composer'ın seçtiği ana cevabı kullanıcıya
+    gösterilen kaynaklarla hizalar.
+
+    Öncelik:
+    1. Candidate havuzunda hedef dokümanın kendi chunk'ı.
+    2. Hedef dokümanı Chroma metadata'sından doğrudan bulma.
+    3. Hedef dokümanı açıkça referanslayan cross-reference chunk'ı.
+    4. Mevcut candidate havuzu.
+
+    Böylece:
+        cevap = 3GPP TS 23.502
+    ise mümkün olduğunda kaynak kartında da TS 23.502 gösterilir.
+
+    RFC 8999 gibi hedef doküman DB'de yoksa cross-reference
+    kanıtı korunur.
+    """
+
+    answer = (
+        primary_answer
+        or ""
+    ).strip()
+
+    if not answer:
+        return results[:limit]
+
+    identity = (
+        _parse_primary_document_identity(
+            answer
+        )
+    )
+
+    direct_matches: list[
+        dict[str, Any]
+    ] = []
+
+    if identity is not None:
+        expected_org, expected_code = (
+            identity
+        )
+
+        for result in results:
+            metadata = result.get(
+                "metadata",
+                {},
+            )
+
+            org = str(
+                metadata.get(
+                    "org",
+                    "",
+                )
+                or ""
+            ).strip()
+
+            code = str(
+                metadata.get(
+                    "code",
+                    "",
+                )
+                or ""
+            ).strip()
+
+            if (
+                org.casefold()
+                == expected_org.casefold()
+                and code.casefold()
+                == expected_code.casefold()
+            ):
+                direct_matches.append(
+                    result
+                )
+
+    # Kaynak paneli için hedef dokümanın kendi Scope / Introduction
+    # gibi daha açıklayıcı maddelerini DB'den çekmeyi önce dene.
+    # Böylece fallback havuzunda yalnızca References maddesi varsa
+    # kullanıcıya onu dört kez göstermek yerine daha anlamlı kaynak
+    # kartı sunulur.
+    if question:
+        hydrated_matches = (
+            _fetch_primary_document_sources(
+                question=question,
+                primary_answer=answer,
+                limit=limit,
+            )
+        )
+
+        if hydrated_matches:
+            print(
+                "[SOURCE] Primary document hydrated:",
+                answer,
+                "| chunk:",
+                len(hydrated_matches),
+            )
+            return hydrated_matches
+
+    if direct_matches:
+        return _deduplicate_results(
+            direct_matches
+        )[:limit]
+
+    # Cross-reference fallback:
+    # Hedef dokümanın kendisi indexte olmayabilir.
+    answer_tokens = [
+        answer,
+    ]
+
+    rfc_match = re.fullmatch(
+        r"RFC\s+(\d+)",
+        answer,
+        flags=re.IGNORECASE,
+    )
+
+    if rfc_match:
+        answer_tokens.append(
+            f"RFC{rfc_match.group(1)}"
+        )
+
+    referenced_matches = [
+        result
+        for result in results
+        if any(
+            token.casefold()
+            in str(
+                result.get(
+                    "text",
+                    "",
+                )
+                or ""
+            ).casefold()
+            for token in answer_tokens
+        )
+    ]
+
+    if referenced_matches:
+        return referenced_matches[:limit]
+
+    return results[:limit]
 
 def _targeted_fallback_retrieval(
     question: str,
@@ -1194,6 +1357,32 @@ def _targeted_fallback_retrieval(
         E.164 number maximum length
         document defines version 1 of QUIC
     """
+    reference_query = (
+        _reference_point_fts_query(
+            question
+        )
+    )
+
+    if reference_query:
+        print(
+            "[FALLBACK] Reference-point FTS:",
+            reference_query,
+        )
+
+        reference_results = (
+            lexical_search.search_query(
+                query=reference_query,
+                limit=20,
+            )
+        )
+
+        if reference_results:
+            print(
+                "[FALLBACK] Reference-point aday:",
+                len(reference_results),
+            )
+
+            return reference_results
 
     precision_phrases = (
         _precision_fallback_phrases(
@@ -1209,6 +1398,15 @@ def _targeted_fallback_retrieval(
         print(
             "[FALLBACK] Precision lexical route:",
             phrase_queries,
+        )
+
+    elif _is_document_question(
+        question
+    ):
+        return (
+            _document_fallback_candidates(
+                question
+            )
         )
 
     else:
@@ -1228,7 +1426,6 @@ def _targeted_fallback_retrieval(
             if len(search_queries) > 1
             else []
         )
-
 
     if not phrase_queries:
         return []
@@ -1299,7 +1496,7 @@ def _targeted_fallback_retrieval(
     )
 
     return candidates[
-        :FALLBACK_RERANK_TOP_K
+        :FALLBACK_COMPOSER_TOP_K
     ]
 
 # =========================================================
@@ -1716,14 +1913,33 @@ def generate_reply(
             ]
         )
 
+        fallback_composer_results = (
+            fallback_prompt_results
+        )
+
+        if (
+            str(
+                composition.get(
+                    "answer_type",
+                    "",
+                )
+            )
+            == "STANDART / DOKÜMAN"
+        ):
+            fallback_composer_results = (
+                fallback_results[
+                    :DOCUMENT_FALLBACK_COMPOSER_TOP_K
+                ]
+            )
+
         print(
             "[FALLBACK] Composer evidence chunk:",
             len(
-                fallback_prompt_results
+                fallback_composer_results
             ),
         )
 
-        if fallback_prompt_results:
+        if fallback_composer_results:
             fallback_composer_start = (
                 time.perf_counter()
             )
@@ -1734,7 +1950,7 @@ def generate_reply(
             ) = _compose_and_render(
                 question=message,
                 chunks=(
-                    fallback_prompt_results
+                    fallback_composer_results
                 ),
             )
 
@@ -1796,11 +2012,37 @@ def generate_reply(
                     total_time=total_time,
                 )
 
+                source_results = (
+                    fallback_prompt_results
+                )
+
+                if (
+                    str(
+                        fallback_composition.get(
+                            "answer_type",
+                            "",
+                        )
+                    )
+                    == "STANDART / DOKÜMAN"
+                ):
+                    source_results = (
+                        _select_document_source_results(
+                            fallback_composer_results,
+                            str(
+                                fallback_composition.get(
+                                    "primary_answer",
+                                    "",
+                                )
+                            ),
+                            question=message,
+                        )
+                    )
+
                 return {
                     "reply": reply,
                     "sources": (
                         _build_sources(
-                            fallback_prompt_results
+                            source_results
                         )
                     ),
                     "blocked_sources": (
@@ -1837,11 +2079,35 @@ def generate_reply(
             "high",
         }
     ):
-        llm_results = (
-            fallback_prompt_results[
-                :PROMPT_TOP_K
-            ]
-        )
+        if (
+            str(
+                fallback_composition.get(
+                    "answer_type",
+                    "",
+                )
+            )
+            == "STANDART / DOKÜMAN"
+        ):
+            llm_results = (
+                _select_document_source_results(
+                    fallback_composer_results,
+                    str(
+                        fallback_composition.get(
+                            "primary_answer",
+                            "",
+                        )
+                    ),
+                    question=message,
+                    limit=PROMPT_TOP_K,
+                )
+            )
+
+        else:
+            llm_results = (
+                fallback_prompt_results[
+                    :PROMPT_TOP_K
+                ]
+            )
 
     # -----------------------------------------------------
     # PROMPT

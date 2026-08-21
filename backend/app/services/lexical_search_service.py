@@ -182,3 +182,99 @@ class LexicalSearchService:
             )
 
         return results
+
+    def search_query(
+        self,
+        query: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """
+        Hazır FTS5 query syntax'ı ile arama yapar.
+
+        Örnek:
+            "reference point" AND AMF AND AUSF
+            "reference point between" AND UPF
+        """
+
+        if not self.available:
+            return []
+
+        clean_query = (
+            query
+            or ""
+        ).strip()
+
+        if not clean_query:
+            return []
+
+        connection = sqlite3.connect(
+            str(LEXICAL_DB_PATH)
+        )
+
+        try:
+            cursor = connection.cursor()
+
+            rows = cursor.execute(
+                """
+                SELECT
+                    chunk_id,
+                    text,
+                    org,
+                    code,
+                    version,
+                    clause,
+                    status,
+                    source_url,
+                    bm25(chunks_fts) AS lexical_score
+                FROM chunks_fts
+                WHERE chunks_fts MATCH ?
+                ORDER BY lexical_score
+                LIMIT ?
+                """,
+                (
+                    clean_query,
+                    limit,
+                ),
+            ).fetchall()
+
+        finally:
+            connection.close()
+
+        results: list[
+            dict[str, Any]
+        ] = []
+
+        for (
+            chunk_id,
+            text,
+            org,
+            code,
+            version,
+            clause,
+            status,
+            source_url,
+            lexical_score,
+        ) in rows:
+            results.append(
+                {
+                    "chunk_id": chunk_id,
+                    "text": text or "",
+                    "distance": 0.0,
+                    "lexical_score": float(
+                        lexical_score
+                    ),
+                    "metadata": {
+                        "org": org or "",
+                        "code": code or "",
+                        "version": version or "",
+                        "clause": clause or "",
+                        "status": status or "",
+                        "source_url": (
+                            source_url
+                            or ""
+                        ),
+                    },
+                }
+            )
+
+        return results

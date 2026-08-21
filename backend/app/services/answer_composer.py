@@ -193,20 +193,20 @@ REFERENCE_POINT_RELATION_PATTERNS = [
         r"\s*:\s*"
         r"Reference\s+point\s+between\s+"
         r"(?:the\s+)?"
-        r"([A-Z][A-Z0-9\-]{1,12})"
+        r"(\(R\)AN|[A-Z][A-Z0-9\-]{1,12})"
         r"\s+and\s+"
         r"(?:the\s+)?"
-        r"([A-Z][A-Z0-9\-]{1,12})"
+        r"(\(R\)AN|[A-Z][A-Z0-9\-]{1,12})"
         r"\b",
         flags=re.IGNORECASE,
     ),
     re.compile(
         r"\bReference\s+point\s+between\s+"
         r"(?:the\s+)?"
-        r"([A-Z][A-Z0-9\-]{1,12})"
+        r"(\(R\)AN|[A-Z][A-Z0-9\-]{1,12})"
         r"\s+and\s+"
         r"(?:the\s+)?"
-        r"([A-Z][A-Z0-9\-]{1,12})"
+        r"(\(R\)AN|[A-Z][A-Z0-9\-]{1,12})"
         r"\s*[:\-]\s*"
         r"("
         r"[A-Za-z]{1,5}\d+[A-Za-z]?"
@@ -392,7 +392,36 @@ DOCUMENT_RELATION_PATTERN = re.compile(
     r")\b",
     flags=re.IGNORECASE,
 )
+DOCUMENT_IDENTIFIER_PATTERN = re.compile(
+    r"\b("
+    r"(?:3GPP\s+)?"
+    r"(?:TS|TR)\s*\d+(?:\.\d+)+"
+    r"|"
+    r"RFC\s*\d+"
+    r")\b",
+    flags=re.IGNORECASE,
+)
 
+RFC_TITLE_REFERENCE_PATTERN = re.compile(
+    r'["“]'
+    r'([^"”]{4,200})'
+    r'["”]'
+    r'\s*,?\s*'
+    r'RFC\s*0*(\d+)',
+    flags=re.IGNORECASE,
+)
+
+
+SPEC_TITLE_REFERENCE_PATTERN = re.compile(
+    r'\b(?:3GPP\s+)?'
+    r'(TS|TR)\s*'
+    r'(\d+(?:\.\d+)+)'
+    r'\s*:\s*'
+    r'["“]'
+    r'([^"”]{4,220})'
+    r'["”]',
+    flags=re.IGNORECASE,
+)
 
 # =========================================================
 # GENERIC CANDIDATES
@@ -601,6 +630,26 @@ def _question_acronyms(
 # REFERENCE POINT RELATION
 # =========================================================
 
+def _normalize_reference_endpoint(
+    value: str,
+) -> str:
+    endpoint = (
+        value
+        or ""
+    ).strip().upper()
+
+    # Standartlarda aynı erişim tarafı farklı
+    # gösterimlerle yazılabiliyor.
+    if endpoint in {
+        "(R)AN",
+        "RAN",
+        "NG-RAN",
+    }:
+        return "RAN"
+
+    return endpoint
+
+
 def _reference_point_relation_score(
     candidate: str,
     text: str,
@@ -625,11 +674,14 @@ def _reference_point_relation_score(
         or ""
     ).strip().casefold()
 
-    question_entities = (
-        _question_acronyms(
+    question_entities = {
+        _normalize_reference_endpoint(
+            entity
+        )
+        for entity in _question_acronyms(
             question
         )
-    )
+    }
 
     if len(
         question_entities
@@ -661,8 +713,12 @@ def _reference_point_relation_score(
                 continue
 
             endpoints = {
-                left.upper(),
-                right.upper(),
+                _normalize_reference_endpoint(
+                    left
+                ),
+                _normalize_reference_endpoint(
+                    right
+                ),
             }
 
             matched_count = len(
@@ -1816,7 +1872,7 @@ def _format_document_candidate(
         and clean_code.isdigit()
     ):
         return (
-            f"RFC {clean_code}"
+            f"RFC {int(clean_code)}"
         )
 
     if clean_org:
@@ -1826,6 +1882,397 @@ def _format_document_candidate(
 
     return clean_code
 
+
+def _format_referenced_document(
+    value: str,
+) -> str:
+    clean = re.sub(
+        r"\s+",
+        " ",
+        (
+            value
+            or ""
+        ).strip(),
+    )
+
+    rfc_match = re.fullmatch(
+        r"RFC\s*(\d+)",
+        clean,
+        flags=re.IGNORECASE,
+    )
+
+    if rfc_match:
+        return (
+            f"RFC {int(rfc_match.group(1))}"
+        )
+
+    spec_match = re.fullmatch(
+        r"(?:(?:3GPP)\s+)?"
+        r"(TS|TR)\s*"
+        r"(\d+(?:\.\d+)+)",
+        clean,
+        flags=re.IGNORECASE,
+    )
+
+    if spec_match:
+        return (
+            "3GPP "
+            f"{spec_match.group(1).upper()} "
+            f"{spec_match.group(2)}"
+        )
+
+    return clean
+
+
+def _document_subject_tokens(
+    question: str,
+) -> set[str]:
+    generic_tokens = {
+        "rfc",
+        "standart",
+        "standard",
+        "doküman",
+        "document",
+        "specification",
+        "protocol",
+        "protokol",
+        "hangi",
+        "tanımlanır",
+        "tanımlanan",
+        "defined",
+        "3gpp",
+        "ietf",
+        "ts",
+        "tr",
+    }
+
+    return {
+        token
+        for token in _tokenize(
+            question
+        )
+        if token not in generic_tokens
+    }
+
+
+def _add_referenced_document_candidates(
+    candidate_scores: dict[
+        str,
+        dict[str, Any],
+    ],
+    chunks: list[dict[str, Any]],
+    question: str,
+) -> None:
+    """
+    Chunk'ın kendisi cevap dokümanı olmayabilir.
+
+    Örnek:
+        NGAP is defined in TS 38.413
+        Version-Independent Properties of QUIC, RFC 8999
+
+    Bu durumda referans verilen dokümanı da candidate
+    havuzuna ekler.
+
+    Cevap numarası hard-code edilmez.
+    """
+
+    subject_tokens = (
+        _document_subject_tokens(
+            question
+        )
+    )
+
+    def add_candidate(
+        value: str,
+        score: float,
+        strong: bool,
+    ) -> None:
+        normalized = _normalize(
+            value
+        )
+
+        if not normalized:
+            return
+
+        existing = (
+            candidate_scores.get(
+                normalized
+            )
+        )
+
+        if existing is None:
+            candidate_scores[
+                normalized
+            ] = {
+                "value": value,
+                "score": score,
+                "occurrences": 1,
+                "strong_evidence": strong,
+            }
+
+            return
+
+        existing["score"] = max(
+            float(
+                existing.get(
+                    "score",
+                    0.0,
+                )
+            ),
+            score,
+        )
+
+        existing["occurrences"] = (
+            int(
+                existing.get(
+                    "occurrences",
+                    1,
+                )
+            )
+            + 1
+        )
+
+        existing["strong_evidence"] = (
+            bool(
+                existing.get(
+                    "strong_evidence"
+                )
+            )
+            or strong
+        )
+
+    for chunk in chunks:
+        metadata = chunk.get(
+            "metadata",
+            {},
+        )
+
+        clause_title = str(
+            metadata.get(
+                "clause_title",
+                "",
+            )
+            or ""
+        )
+
+        text = str(
+            chunk.get(
+                "text",
+                "",
+            )
+            or ""
+        )
+
+        combined_text = (
+            clause_title
+            + "\n"
+            + text
+        )
+
+
+        # ---------------------------------------------
+        # 1. Çok güçlü açık ilişki:
+        # "defined in TS 38.413"
+        # ---------------------------------------------
+
+        for match in (
+            DOCUMENT_RELATION_PATTERN.finditer(
+                combined_text
+            )
+        ):
+            value = (
+                _format_referenced_document(
+                    match.group(1)
+                )
+            )
+
+            add_candidate(
+                value=value,
+                score=16.0,
+                strong=True,
+            )
+
+        # ---------------------------------------------
+        # 2. Bibliyografik / cross-reference:
+        #
+        # "Version-Independent Properties of QUIC",
+        # RFC 8999
+        # ---------------------------------------------
+
+        for match in (
+            RFC_TITLE_REFERENCE_PATTERN.finditer(
+                combined_text
+            )
+        ):
+            title = match.group(1)
+            rfc_number = match.group(2)
+
+            title_tokens = _tokenize(
+                title
+            )
+
+            overlap = len(
+                subject_tokens
+                & title_tokens
+            )
+
+            if overlap < 2:
+                continue
+
+            value = (
+                f"RFC {int(rfc_number)}"
+            )
+
+            title_coverage = (
+                overlap
+                / max(
+                    len(subject_tokens),
+                    1,
+                )
+            )
+
+            add_candidate(
+                value=value,
+                score=(
+                    26.0
+                    + min(
+                        overlap,
+                        4,
+                    ) * 2.0
+                    + title_coverage * 6.0
+                ),
+                strong=True,
+            )
+
+        # ---------------------------------------------
+        # STRUCTURED 3GPP REFERENCES
+        #
+        # TS 23.501:
+        # "System Architecture for the 5G System"
+        # ---------------------------------------------
+
+        for match in (
+            SPEC_TITLE_REFERENCE_PATTERN.finditer(
+                combined_text
+            )
+        ):
+            spec_type = (
+                match.group(1).upper()
+            )
+            spec_number = match.group(2)
+            title = match.group(3)
+
+            title_tokens = _tokenize(
+                title
+            )
+
+            overlap = len(
+                subject_tokens
+                & title_tokens
+            )
+
+            if overlap < 2:
+                continue
+
+            value = (
+                f"3GPP {spec_type} "
+                f"{spec_number}"
+            )
+
+            title_coverage = (
+                overlap
+                / max(
+                    len(subject_tokens),
+                    1,
+                )
+            )
+
+            add_candidate(
+                value=value,
+                score=(
+                    26.0
+                    + min(
+                        overlap,
+                        4,
+                    ) * 2.0
+                    + title_coverage * 6.0
+                ),
+                strong=True,
+            )
+        is_reference_section = bool(
+            re.match(
+                r"\s*(?:Normative\s+|Informative\s+)?"
+                r"References\b",
+                combined_text,
+                flags=re.IGNORECASE,
+            )
+        )
+
+        for match in (
+            DOCUMENT_IDENTIFIER_PATTERN.finditer(
+                combined_text
+            )
+        ):
+            start = max(
+                0,
+                match.start() - 220,
+            )
+
+            end = min(
+                len(combined_text),
+                match.end() + 220,
+            )
+
+            context = (
+                combined_text[
+                    start:end
+                ]
+            )
+
+            context_tokens = _tokenize(
+                context
+            )
+
+            overlap = len(
+                subject_tokens
+                & context_tokens
+            )
+
+            if overlap == 0:
+                continue
+
+            # References bölümlerinde tek bir generic
+            # kelime eşleşmesi yeterli olmasın.
+            if is_reference_section:
+                continue
+            if (
+                "reference"
+                in clause_title.casefold()
+                and overlap < 2
+            ):
+                continue
+
+            value = (
+                _format_referenced_document(
+                    match.group(1)
+                )
+            )
+
+            score = (
+                6.0
+                + min(
+                    overlap,
+                    4,
+                ) * 2.0
+            )
+
+            add_candidate(
+                value=value,
+                score=score,
+                strong=(
+                    overlap >= 2
+                ),
+            )
 
 def _document_directness_score(
     question: str,
@@ -1956,6 +2403,62 @@ def _document_directness_score(
         score += 2.0
 
     return score
+
+
+def _document_format_alignment_score(
+    question: str,
+    candidate: str,
+) -> float:
+    """
+    Sorunun açıkça istediği belge türü ile aday belge
+    türünün uyumunu puanlar.
+
+    Örnek:
+        "hangi RFC" -> RFC adaylarına bonus,
+        3GPP TS/TR adaylarına ceza.
+
+        "hangi 3GPP standardı" -> 3GPP adaylarına bonus.
+    """
+
+    normalized_question = (
+        question
+        or ""
+    ).casefold()
+
+    normalized_candidate = (
+        candidate
+        or ""
+    ).strip().casefold()
+
+    if "rfc" in normalized_question:
+        if normalized_candidate.startswith(
+            "rfc "
+        ):
+            return 4.0
+
+        return -6.0
+
+    asks_3gpp_standard = (
+        "3gpp"
+        in normalized_question
+        and (
+            "standart"
+            in normalized_question
+            or "standard"
+            in normalized_question
+        )
+    )
+
+    if asks_3gpp_standard:
+        if normalized_candidate.startswith(
+            "3gpp "
+        ):
+            return 3.0
+
+        return -3.0
+
+    return 0.0
+
 
 def _apply_document_relation_bonuses(
     candidate_scores: dict[
@@ -2147,17 +2650,68 @@ def compose_answer_evidence(
                 + query_alignment
             )
 
-            candidate_scores[
+            strong_evidence = (
+                directness >= 4.0
+                or query_alignment >= 4.0
+            )
+
+            existing = candidate_scores.get(
                 normalized
-            ] = {
-                "value": value,
-                "score": score,
-                "occurrences": 1,
-                "strong_evidence": (
-                    directness >= 4.0
-                    or query_alignment >= 4.0
-                ),
-            }
+            )
+
+            if existing is None:
+                candidate_scores[
+                    normalized
+                ] = {
+                    "value": value,
+                    "score": score,
+                    "occurrences": 1,
+                    "strong_evidence": (
+                        strong_evidence
+                    ),
+                }
+
+            else:
+                existing[
+                    "score"
+                ] = max(
+                    float(
+                        existing.get(
+                            "score",
+                            0.0,
+                        )
+                    ),
+                    score,
+                )
+
+                # Aynı dokümanın birden fazla ilgili
+                # chunk'ta bulunması ek kanıttır.
+                existing[
+                    "score"
+                ] += 0.75
+
+                existing[
+                    "occurrences"
+                ] = (
+                    int(
+                        existing.get(
+                            "occurrences",
+                            1,
+                        )
+                    )
+                    + 1
+                )
+
+                existing[
+                    "strong_evidence"
+                ] = (
+                    bool(
+                        existing.get(
+                            "strong_evidence"
+                        )
+                    )
+                    or strong_evidence
+                )
 
     # -----------------------------------------------------
     # CHUNKS
@@ -2480,10 +3034,33 @@ def compose_answer_evidence(
     if answer_type == (
         "STANDART / DOKÜMAN"
     ):
+        _add_referenced_document_candidates(
+            candidate_scores,
+            chunks,
+            question,
+        )
+
         _apply_document_relation_bonuses(
             candidate_scores,
             chunks,
         )
+
+        for candidate_data in (
+            candidate_scores.values()
+        ):
+            candidate_data[
+                "score"
+            ] += (
+                _document_format_alignment_score(
+                    question,
+                    str(
+                        candidate_data.get(
+                            "value",
+                            "",
+                        )
+                    ),
+                )
+            )
 
     # -----------------------------------------------------
     # SUPPORTING FACTS
@@ -2540,9 +3117,18 @@ def compose_answer_evidence(
     ranked_candidates = sorted(
         candidate_scores.values(),
         key=lambda item: (
-            item[
-                "score"
-            ]
+            float(
+                item.get(
+                    "score",
+                    0.0,
+                )
+            ),
+            int(
+                item.get(
+                    "occurrences",
+                    0,
+                )
+            ),
         ),
         reverse=True,
     )
@@ -2580,6 +3166,40 @@ def compose_answer_evidence(
             - second_score
         )
 
+        top_occurrences = int(
+            top.get(
+                "occurrences",
+                0,
+            )
+        )
+
+        second_occurrences = (
+            int(
+                ranked_candidates[
+                    1
+                ].get(
+                    "occurrences",
+                    0,
+                )
+            )
+            if len(
+                ranked_candidates
+            ) > 1
+            else 0
+        )
+
+        document_occurrence_win = (
+            answer_type
+            == "STANDART / DOKÜMAN"
+            and abs(
+                margin
+            ) < 0.001
+            and (
+                top_occurrences
+                >= second_occurrences + 2
+            )
+        )
+
         risky_types = {
             "ARAYÜZ / REFERANS NOKTASI",
             "PROTOKOL",
@@ -2603,7 +3223,10 @@ def compose_answer_evidence(
 
         if (
             top_score >= 7.0
-            and margin >= 1.0
+            and (
+                margin >= 1.0
+                or document_occurrence_win
+            )
             and strong_enough
         ):
             primary_answer = str(
