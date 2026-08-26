@@ -11,13 +11,6 @@ import re
 # Kullanıcının Türkçe/gündelik sorusunu,
 # standartların kullandığı teknik İngilizce arama
 # ifadelerine dönüştürmek.
-#
-# Örneğin:
-#
-# AMF-SMF sorusu:
-#   "AMF SMF reference point"
-#
-# Burada "N11" cevabı sorguya eklenmez.
 # =========================================================
 
 HIGH_PRECISION_RULES: list[
@@ -96,7 +89,7 @@ HIGH_PRECISION_RULES: list[
         ),
     ),
 
-        # -----------------------------------------------------
+    # -----------------------------------------------------
     # QUIC LOSS DETECTION / RECOVERY / CONGESTION CONTROL
     # -----------------------------------------------------
 
@@ -244,7 +237,7 @@ HIGH_PRECISION_RULES: list[
         ),
     ),
 
-        # -----------------------------------------------------
+    # -----------------------------------------------------
     # HTTP/3 RFC / SPECIFICATION
     # -----------------------------------------------------
 
@@ -406,12 +399,12 @@ CONCEPT_RULES: list[
             r"\bpdu\s+session.*\boluştur\w*",
             r"\bpdu\s+session.*\bbaşlat\w*",
         ),
-            (
-                "PDU Session Establishment",
-                "UE-requested PDU session establishment procedure",
-                "UE Requested PDU Session Establishment",
-            ),
-),
+        (
+            "PDU Session Establishment",
+            "UE-requested PDU session establishment procedure",
+            "UE Requested PDU Session Establishment",
+        ),
+    ),
 
     # -----------------------------------------------------
     # HANDOVER / MOBILITY
@@ -456,7 +449,7 @@ CONCEPT_RULES: list[
         ),
     ),
 
-        # -----------------------------------------------------
+    # -----------------------------------------------------
     # CELL BROADCAST WARNING MESSAGE CANCELLATION
     # -----------------------------------------------------
 
@@ -638,6 +631,40 @@ class QueryNormalizer:
             ]
 
         # -------------------------------------------------
+        # ENTITY-AWARE TEKNİK VARYANTLAR
+        # -------------------------------------------------
+
+        entity_aware_matched = (
+            self._apply_entity_aware_rules(
+                variants=variants,
+                query_for_matching=query_for_matching,
+                max_variants=max_variants,
+            )
+        )
+
+        if entity_aware_matched:
+            return variants[
+                :max_variants
+            ]
+
+        # -------------------------------------------------
+        # GENERIC INTENT & ENTITY TRANSLATION (ÖLÇEKLENEBİLİR KATMAN)
+        # -------------------------------------------------
+
+        generic_matched = (
+            self._apply_generic_intent_translation(
+                variants=variants,
+                query_for_matching=query_for_matching,
+                max_variants=max_variants,
+            )
+        )
+
+        if generic_matched and len(variants) >= max_variants:
+            return variants[
+                :max_variants
+            ]
+
+        # -------------------------------------------------
         # CONTEXT-AWARE DEREGISTRATION
         # -------------------------------------------------
 
@@ -755,6 +782,219 @@ class QueryNormalizer:
         return variants[
             :max_variants
         ]
+
+    def _apply_generic_intent_translation(
+        self,
+        variants: list[str],
+        query_for_matching: str,
+        max_variants: int,
+    ) -> bool:
+        """
+        Soruda geçen genel telekom varlıklarını (AMF, SMF, UPF, UE, SIM vb.)
+        ve soru eylemlerini (görev, prosedür, tanım) yakalayarak standart diline çevirir.
+        """
+        entities = re.findall(
+            r"\b(amf|smf|upf|udm|ausf|pcf|nssf|nef|nrf|udr|chf|gnb|ng-ran|ran|ue|sim|usim|hss|mme|pgw|sgw|sepp)\b",
+            query_for_matching,
+            flags=re.IGNORECASE,
+        )
+        unique_entities = [e.upper() for e in dict.fromkeys(entities)]
+
+        is_functionality = any(
+            re.search(p, query_for_matching, flags=re.IGNORECASE)
+            for p in [r"\bgörev\w*", r"\brol\w*", r"\bne\s+işe\s+yarar", r"\bfunction\w*", r"\bduties\b"]
+        )
+        is_procedure = any(
+            re.search(p, query_for_matching, flags=re.IGNORECASE)
+            for p in [r"\bnasıl\b", r"\badım\w*", r"\bakış\w*", r"\bprosedür\w*", r"\bprocedure\b", r"\bflow\b"]
+        )
+        is_overview = any(
+            re.search(p, query_for_matching, flags=re.IGNORECASE)
+            for p in [r"\bnedir\b", r"\btanım\w*", r"\boverview\b", r"\bne\s+demek\b"]
+        )
+
+        generated_variants: list[str] = []
+
+        if unique_entities:
+            entity_str = " ".join(unique_entities)
+            if is_functionality:
+                generated_variants.extend([
+                    f"{entity_str} network function functionality",
+                    f"{entity_str} functionality includes",
+                    f"{entity_str} network function architecture overview",
+                    f"functions and responsibilities of {entity_str}",
+                ])
+            elif is_procedure:
+                generated_variants.extend([
+                    f"{entity_str} procedures and flows",
+                    f"{entity_str} operational call flow",
+                ])
+            elif is_overview:
+                generated_variants.extend([
+                    f"{entity_str} network function overview",
+                    f"{entity_str} architecture definition",
+                ])
+            else:
+                generated_variants.append(f"{entity_str} 5GS architecture specification")
+
+        if not generated_variants:
+            return False
+
+        for var in generated_variants:
+            self._append_unique(variants, var)
+            if len(variants) >= max_variants:
+                break
+
+        return True
+
+    def _apply_entity_aware_rules(
+        self,
+        variants: list[str],
+        query_for_matching: str,
+        max_variants: int,
+    ) -> bool:
+        """
+        Sorudaki açık teknik varlığı standart diline taşır.
+
+        Cevap numarası veya sonuç hard-code edilmez; yalnızca
+        ilgili tanım/scope maddesini bulacak arama ifadeleri eklenir.
+        """
+
+        expansions: tuple[str, ...] = ()
+
+        reference_point_match = re.search(
+            r"\b(n\d{1,3})\b.*\b(?:referans\s+nokt|reference\s+point)",
+            query_for_matching,
+            flags=re.IGNORECASE,
+        )
+
+        if reference_point_match:
+            reference_point = reference_point_match.group(1).upper()
+
+            endpoint_tokens = re.findall(
+                r"\b(?:ue|amf|smf|upf|ausf|udm|pcf|nssf|af|ng-ran|ran)\b",
+                query_for_matching,
+                flags=re.IGNORECASE,
+            )
+            endpoints: list[str] = []
+
+            for token in endpoint_tokens:
+                endpoint = token.upper()
+
+                if endpoint not in endpoints:
+                    endpoints.append(endpoint)
+
+            if re.search(
+                r"\b(?:sinyalleş\w*|signall?ing)\b",
+                query_for_matching,
+                flags=re.IGNORECASE,
+            ):
+                if len(endpoints) >= 2:
+                    first = endpoints[0]
+                    second = endpoints[1]
+                    expansions = (
+                        f"{reference_point} NAS signalling between {first} and {second}",
+                        f"{reference_point} reference point between {first} and {second}",
+                        f"5GS {reference_point} interface NAS protocol {first} {second}",
+                    )
+                else:
+                    expansions = (
+                        f"{reference_point} NAS signalling",
+                        f"5GS {reference_point} interface NAS protocol",
+                        f"{reference_point} reference point signalling",
+                    )
+            else:
+                expansions = (
+                    f"{reference_point} reference point",
+                    f"{reference_point} reference point 5G System architecture",
+                    f"{reference_point} reference point description",
+                )
+
+        elif re.search(
+            r"\b(?:3gpp\s+)?ts\s*23[.\s_-]*502\b",
+            query_for_matching,
+            flags=re.IGNORECASE,
+        ):
+            expansions = (
+                "Procedures for the 5G System Stage 2",
+                "5G System procedures and flows",
+                "5GS procedures",
+            )
+
+        elif (
+            "idempoten" in query_for_matching
+            or (
+                re.search(r"\bput\b", query_for_matching)
+                and re.search(r"\bdelete\b", query_for_matching)
+            )
+        ):
+            expansions = (
+                "Idempotent Methods",
+                "multiple identical requests same intended effect",
+                "PUT DELETE idempotent methods",
+            )
+
+        elif (
+            "quic" in query_for_matching
+            and re.search(
+                r"\b(?:stream|akış)",
+                query_for_matching,
+                flags=re.IGNORECASE,
+            )
+        ):
+            expansions = (
+                "QUIC streams independent streams",
+                "multiple QUIC streams head-of-line blocking",
+                "QUIC Streams RFC 9000",
+            )
+
+        elif (
+            "quic" in query_for_matching
+            and re.search(
+                r"\b(?:udp|datagram)",
+                query_for_matching,
+                flags=re.IGNORECASE,
+            )
+        ):
+            expansions = (
+                "QUIC packet is carried in a UDP datagram",
+                "QUIC UDP datagrams transport",
+                "QUIC packet coalescing UDP datagram",
+            )
+
+        elif "ngap" in query_for_matching:
+            expansions = (
+                "NG Application Protocol purpose",
+                "NGAP services NG-RAN AMF",
+                "NGAP protocol overview",
+            )
+
+        elif (
+            "nas" in query_for_matching
+            and (
+                "5gs" in query_for_matching
+                or "5g" in query_for_matching
+            )
+        ):
+            expansions = (
+                "5GS non-access stratum protocol scope",
+                "5GS NAS protocol functions",
+                "5G mobility management session management NAS",
+            )
+
+        if not expansions:
+            return False
+
+        for expansion in expansions:
+            self._append_unique(
+                variants,
+                expansion,
+            )
+
+            if len(variants) >= max_variants:
+                break
+
+        return True
 
     def _apply_rules(
         self,

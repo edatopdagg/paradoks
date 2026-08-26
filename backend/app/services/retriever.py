@@ -21,11 +21,11 @@ DEFAULT_TOP_K = 3
 # Önemli:
 # Bu değer reranker'a 20 aday gönderildiği anlamına gelmez.
 # Aşağıdaki MAX_MERGED_CANDIDATES ile tekrar sınırlandırılır.
-CHROMA_CANDIDATES_PER_VARIANT = 20
+CHROMA_CANDIDATES_PER_VARIANT = 35
 
 # Query expansion sonrasında reranker'a gönderilecek
 # maksimum birleşik aday sayısı.
-MAX_MERGED_CANDIDATES = 6
+MAX_MERGED_CANDIDATES = 12
 
 # Orijinal sorgu + en fazla 3 teknik varyant.
 MAX_QUERY_VARIANTS = 4
@@ -457,6 +457,7 @@ class Retriever:
         self,
         query: str,
         top_k: int = DEFAULT_TOP_K,
+        where: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """
         Query expansion destekli semantic retrieval.
@@ -559,18 +560,23 @@ class Retriever:
             time.perf_counter()
         )
 
-        result = self.collection.query(
-            query_embeddings=(
-                query_embeddings
-            ),
-            n_results=(
-                chroma_n_results
-            ),
-            include=[
+        query_arguments: dict[str, Any] = {
+            "query_embeddings": query_embeddings,
+            "n_results": chroma_n_results,
+            "include": [
                 "documents",
                 "metadatas",
                 "distances",
             ],
+        }
+
+        if where:
+            query_arguments[
+                "where"
+            ] = where
+
+        result = self.collection.query(
+            **query_arguments
         )
 
         chroma_time = (
@@ -644,6 +650,12 @@ class Retriever:
             "[RETRIEVAL] Chroma varyant başına aday:",
             chroma_n_results,
         )
+
+        if where:
+            print(
+                "[RETRIEVAL] Metadata filtresi:",
+                where,
+            )
 
         print(
             "[RETRIEVAL] Toplam ham sonuç:",

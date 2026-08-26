@@ -23,11 +23,19 @@ Temel kurallar:
   anlamda kullan; açılım uydurma.
 - Birden fazla kaynak varsa soruyu en doğrudan
   cevaplayan içeriğe öncelik ver.
+- Soru genel bir mimari öğeyi soruyorsa, belirli bir
+  hizmete özgü kullanım örneklerini genel tanım gibi sunma.
+- Bir kaynak genel tanım, başka bir kaynak özel kullanım
+  örneği veriyorsa cevabı genel tanıma göre oluştur.
 - Kullanıcının sormadığı yan bilgileri ekleme.
+- Soru birden fazla bölüm içeriyorsa her bölümü yanıtla;
+  kanıtı olmayan bölümü tahmin etme.
 - Kaynak listesini cevaba yazma.
 - İlk cümlede doğrudan cevabı ver.
 - Doğal ve teknik Türkçe kullan.
+- Asla kendi uydurduğun kısaltmaları (örneğin AMM vb.) kullanma. Yalnızca soruda ve kaynaklarda açıkça geçen standart kısaltmaları (AMF, SMF, UPF vb.) veya doğrudan Türkçe/İngilizce tam adlarını kullan.
 - Normalde 1-3 kısa cümle yeterlidir.
+- Yalnızca sana verilen kaynak metinlerde açıkça listelenen görev ve tanımları kullan. Kaynakta geçmeyen harici terimleri veya protokol detaylarını yanıta ekleme.
 - Bilgi yetersizse yalnızca:
   "Bu soruyu yanıtlamak için yeterli standart bilgisi bulunamadı."
 """.strip()
@@ -91,9 +99,10 @@ def infer_answer_type(
             (
                 r"\bhangi(?:\s+\w+){0,3}\s+arayüz\w*",
                 r"\bhangi(?:\s+\w+){0,3}\s+interface\w*",
-                r"\breference\s+point\b",
-                r"\breferans\s+nokt\w*",
                 r"\bhangi(?:\s+\w+){0,3}\s+referans\s+nokt\w*",
+                r"\b\w+\s+ile\s+\w+\s+arasındaki\s+"
+                r"referans\s+nokt\w*\s+hangisidir\b",
+                r"\bwhich(?:\s+\w+){0,3}\s+reference\s+point\b",
             ),
             "ARAYÜZ / REFERANS NOKTASI",
         ),
@@ -134,10 +143,8 @@ def infer_answer_type(
 
         (
             (
-                r"\bhangi prosedür",
-                r"\bprocedure",
-                r"\bnasıl(?:\s+\w+){0,5}\s+iptal\w*",
-                r"\bnasıl(?:\s+\w+){0,5}\s+durdur\w*",
+                r"\bhangi(?:\s+\w+){0,3}\s+prosedür\w*",
+                r"\bwhich(?:\s+\w+){0,3}\s+procedure\b",
             ),
             "PROSEDÜR",
         ),
@@ -178,6 +185,8 @@ def infer_answer_type(
             (
                 r"\bne\s+işe\s+yar\w*",
                 r"\bamacı\s+ne",
+                r"\bhangi\s+amaçla\b",
+                r"\bne\s+amaçla\b",
                 r"\bgörevi\s+ne",
                 r"\bneden\s+kullan\w*",
                 r"\bwhat\s+is\s+the\s+purpose\b",
@@ -344,4 +353,8 @@ Sorulan teknik varlığın türünü değiştirme.
 Standart numarasını yalnızca kullanıcı standart soruyorsa
 veya açıklama için gerçekten gerekiyorsa kullan.
 Kullanıcının sormadığı ayrıntıları ekleme.
+Genel bir teknik öğe soruluyorsa belirli bir hizmete özgü
+örnekleri genel tanımın parçası gibi sunma.
+Soruda birden fazla istek varsa her birini cevapla;
+bir bölüm kaynaklarda yoksa bunu açıkça belirt.
 """.strip()

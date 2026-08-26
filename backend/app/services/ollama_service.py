@@ -52,8 +52,9 @@ def generate_with_ollama(
 
         "options": {
             "temperature": 0.0,
-            "num_predict": 128,
+            "num_predict": 1024,
             "num_ctx": 4096,
+            "repeat_penalty": 1.15,
         },
     }
 

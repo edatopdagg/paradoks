@@ -25,6 +25,16 @@ from app.services.prompt_builder import (
     build_user_prompt,
     infer_answer_type,
 )
+from app.services.question_analysis import (
+    allows_deterministic_fast_path,
+    build_chroma_where,
+    build_result_deduplication_key,
+    extract_document_constraint,
+    has_usable_evidence,
+    is_multi_part_question,
+    is_low_value_clause,
+    result_matches_document_constraint,
+)
 
 from app.services.lexical_search_service import (
     LexicalSearchService,
@@ -38,44 +48,19 @@ from app.services.reranker_service import Reranker
 # =========================================================
 
 RETRIEVAL_TOP_K = 3
-
-# Normal pipeline'da Composer / Renderer / Ollama
-# yalnızca en iyi iki reranked chunk'ı kullanır.
 PROMPT_TOP_K = 2
-
+STRONG_RERANK_SCORE = 7.0
+STRONG_RERANK_MARGIN = 2.0
 
 # =========================================================
 # CONTROLLED FALLBACK AYARLARI
 # =========================================================
-#
-# Normal Retriever davranışını değiştirmiyoruz.
-#
-# İkinci retrieval yalnızca normal evidence'ın
-# güvenilmez olabileceğine dair güçlü sinyal varsa
-# çalışır.
-# =========================================================
 
-# Composer fallback sırasında normal soru türleri için
-# sınırlı evidence kullanılır.
 FALLBACK_COMPOSER_TOP_K = 4
-
-# Doküman/RFC discovery sorularında aynı dokümanın
-# birden fazla chunk'taki kanıtını Composer'ın birlikte
-# görebilmesi gerekir. Bu yüzden yalnızca bu cevap türünde
-# daha geniş bir lexical evidence havuzu kullanılır.
 DOCUMENT_FALLBACK_COMPOSER_TOP_K = 20
-
 
 # =========================================================
 # DETERMINISTIC FAST-PATH TYPES
-# =========================================================
-#
-# Bunlar genelleme testinde güvenilir davranış
-# gösterdiğimiz cevap türleri.
-#
-# NETWORK FUNCTION özellikle yok.
-# Geçerli NF benchmark/evidence olmadan deterministic
-# cevap üretmeyeceğiz.
 # =========================================================
 
 FAST_PATH_TYPES = {
@@ -88,7 +73,6 @@ FAST_PATH_TYPES = {
     "DEĞER / LİMİT",
 }
 
-
 retriever = Retriever()
 reranker = Reranker()
 lexical_search = LexicalSearchService()
@@ -100,63 +84,15 @@ lexical_search = LexicalSearchService()
 def _deduplicate_results(
     results: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """
-    Aynı belge / madde / metin tekrarlarını temizler.
-    """
-
-    unique_results: list[
-        dict[str, Any]
-    ] = []
-
-    seen: set[
-        tuple[str, str, str, str]
-    ] = set()
+    unique_results: list[dict[str, Any]] = []
+    seen: set[tuple[str, ...]] = set()
 
     for result in results:
-        metadata = result.get(
-            "metadata",
-            {},
-        )
-
-        text = (
-            result.get(
-                "text"
-            )
-            or ""
-        ).strip()
-
-        key = (
-            str(
-                metadata.get(
-                    "org",
-                    "",
-                )
-            ),
-            str(
-                metadata.get(
-                    "code",
-                    "",
-                )
-            ),
-            str(
-                metadata.get(
-                    "clause",
-                    "",
-                )
-            ),
-            text,
-        )
-
+        key = build_result_deduplication_key(result)
         if key in seen:
             continue
-
-        seen.add(
-            key
-        )
-
-        unique_results.append(
-            result
-        )
+        seen.add(key)
+        unique_results.append(result)
 
     return unique_results
 
@@ -164,24 +100,10 @@ def _deduplicate_results(
 def _filter_available_results(
     results: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """
-    Composer / Renderer / Ollama için kullanılabilir
-    kaynakları seçer.
-    """
-
     return [
         result
         for result in results
-        if result.get(
-            "metadata",
-            {},
-        ).get(
-            "status"
-        )
-        in {
-            "available",
-            "indexed",
-        }
+        if result.get("metadata", {}).get("status") in {"available", "indexed"}
     ]
 
 
@@ -191,14 +113,50 @@ def _filter_blocked_results(
     return [
         result
         for result in results
-        if result.get(
-            "metadata",
-            {},
-        ).get(
-            "status"
-        )
-        == "blocked"
+        if result.get("metadata", {}).get("status") == "blocked"
     ]
+
+
+def _prefer_content_results(
+    question: str,
+    results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if _is_document_question(question):
+        return results
+
+    content_results = [
+        result
+        for result in results
+        if not is_low_value_clause(
+            str(result.get("metadata", {}).get("clause", "")),
+            str(result.get("metadata", {}).get("clause_title", "")),
+        )
+    ]
+
+    return content_results or results
+
+
+def _select_prompt_results(
+    question: str,
+    results: list[dict[str, Any]],
+    limit: int = PROMPT_TOP_K,
+) -> list[dict[str, Any]]:
+    selected = results[:limit]
+
+    if len(selected) < 2 or is_multi_part_question(question):
+        return selected
+
+    top_score = float(selected[0].get("rerank_score", 0.0))
+    second_score = float(selected[1].get("rerank_score", 0.0))
+
+    if top_score >= STRONG_RERANK_SCORE and (top_score - second_score) >= STRONG_RERANK_MARGIN:
+        print(
+            "[EVIDENCE] Güçlü skor farkı; tek chunk kullanılacak:",
+            f"{top_score:.4f} vs {second_score:.4f}",
+        )
+        return selected[:1]
+
+    return selected
 
 
 # =========================================================
@@ -210,24 +168,9 @@ def _build_blocked_sources(
 ) -> list[dict[str, Any]]:
     return [
         {
-            "org": result[
-                "metadata"
-            ].get(
-                "org",
-                "Bilinmiyor",
-            ),
-            "code": result[
-                "metadata"
-            ].get(
-                "code",
-                "Bilinmiyor",
-            ),
-            "source_url": result[
-                "metadata"
-            ].get(
-                "source_url",
-                "",
-            ),
+            "org": result["metadata"].get("org", "Bilinmiyor"),
+            "code": result["metadata"].get("code", "Bilinmiyor"),
+            "source_url": result["metadata"].get("source_url", ""),
         }
         for result in blocked_results
     ]
@@ -236,101 +179,40 @@ def _build_blocked_sources(
 def _build_sources(
     results: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """
-    Frontend'e gönderilen kaynak kartlarını metadata bazında
-    tekilleştirir.
-
-    Aynı doküman / sürüm / madde farklı chunk metinleriyle
-    birkaç kez dönmüş olsa bile kullanıcı aynı kaynak kartını
-    tekrar tekrar görmez.
-    """
-
     sources: list[dict[str, Any]] = []
-
-    seen: set[
-        tuple[str, str, str, str, str]
-    ] = set()
+    seen: set[tuple[str, ...]] = set()
 
     for result in results:
-        metadata = result.get(
-            "metadata",
-            {},
-        )
+        metadata = result.get("metadata", {})
+        org = str(metadata.get("org", "Bilinmiyor") or "Bilinmiyor")
+        code = str(metadata.get("code", "Bilinmiyor") or "Bilinmiyor")
+        version = str(metadata.get("version", "Bilinmiyor") or "Bilinmiyor")
 
-        org = str(
-            metadata.get(
-                "org",
-                "Bilinmiyor",
-            )
-            or "Bilinmiyor"
-        )
+        if re.search(r"https?://", version, flags=re.IGNORECASE):
+            version = "Bilinmiyor"
 
-        code = str(
-            metadata.get(
-                "code",
-                "Bilinmiyor",
-            )
-            or "Bilinmiyor"
-        )
+        clause = str(metadata.get("clause", "Bilinmiyor") or "Bilinmiyor")
+        source_url = str(metadata.get("source_url", "") or "")
 
-        version = str(
-            metadata.get(
-                "version",
-                "Bilinmiyor",
-            )
-            or "Bilinmiyor"
-        )
-
-        clause = str(
-            metadata.get(
-                "clause",
-                "Bilinmiyor",
-            )
-            or "Bilinmiyor"
-        )
-
-        source_url = str(
-            metadata.get(
-                "source_url",
-                "",
-            )
-            or ""
-        )
-
-        key = (
-            org.casefold(),
-            code.casefold(),
-            version.casefold(),
-            clause.casefold(),
-            source_url.casefold(),
-        )
+        if source_url:
+            key = ("url", source_url.casefold(), clause.casefold())
+        else:
+            key = ("metadata", org.casefold(), code.casefold(), version.casefold(), clause.casefold())
 
         if key in seen:
             continue
 
-        seen.add(
-            key
-        )
-
+        seen.add(key)
         sources.append(
             {
                 "org": org,
                 "code": code,
                 "version": version,
                 "clause": clause,
-                "clause_title": metadata.get(
-                    "clause_title",
-                    "",
-                ),
-                "status": metadata.get(
-                    "status",
-                    "Bilinmiyor",
-                ),
+                "clause_title": metadata.get("clause_title", ""),
+                "status": metadata.get("status", "Bilinmiyor"),
                 "source_url": source_url,
-                "distance": result.get(
-                    "distance",
-                    0.0,
-                ),
+                "distance": result.get("distance", 0.0),
             }
         )
 
@@ -344,77 +226,25 @@ def _build_sources(
 def _compose_and_render(
     question: str,
     chunks: list[dict[str, Any]],
-) -> tuple[
-    dict[str, Any],
-    dict[str, Any],
-]:
-    """
-    Deterministic answer path.
-
-    Ollama kullanılmaz.
-    """
-
-    composition = (
-        compose_answer_evidence(
-            question=question,
-            chunks=chunks,
-        )
-    )
-
-    rendered = (
-        render_composed_answer(
-            question=question,
-            composition=composition,
-        )
-    )
-
-    return (
-        composition,
-        rendered,
-    )
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    composition = compose_answer_evidence(question=question, chunks=chunks)
+    rendered = render_composed_answer(question=question, composition=composition)
+    return composition, rendered
 
 
 def _can_use_fast_path(
+    question: str,
     composition: dict[str, Any],
     rendered: dict[str, Any],
 ) -> bool:
-    """
-    Sadece gerçekten doğrulanmış Composer çıktısı
-    kullanıcıya doğrudan döner.
-    """
-
-    answer_type = str(
-        composition.get(
-            "answer_type",
-            "",
-        )
-    )
-
-    confidence = str(
-        composition.get(
-            "confidence",
-            "low",
-        )
-    )
-
-    renderer_success = bool(
-        rendered.get(
-            "success",
-            False,
-        )
-    )
-
-    reply = str(
-        rendered.get(
-            "reply",
-            "",
-        )
-        or ""
-    ).strip()
+    answer_type = str(composition.get("answer_type", ""))
+    confidence = str(composition.get("confidence", "low"))
+    renderer_success = bool(rendered.get("success", False))
+    reply = str(rendered.get("reply", "") or "").strip()
 
     return (
-        answer_type
-        in FAST_PATH_TYPES
+        answer_type in FAST_PATH_TYPES
+        and allows_deterministic_fast_path(question, answer_type)
         and confidence == "high"
         and renderer_success
         and bool(reply)
@@ -429,394 +259,163 @@ def _value_answer_echoes_question(
     question: str,
     primary_answer: str,
 ) -> bool:
-    """
-    DEĞER / LİMİT sorularında bir identifier'ın içindeki
-    sayı yanlışlıkla cevap olarak seçilmiş olabilir.
-
-    Örnek:
-
-        Soru:
-            E.164 numarası en fazla kaç basamak?
-
-        Yanlış candidate:
-            164 digit
-
-    Buradaki 164 zaten sorudaki E.164 identifier'ından
-    geliyor. Bu nedenle ikinci retrieval gerekir.
-
-    Ancak:
-        15 digits
-
-    sorunun içinde geçmediği için şüpheli sayılmaz.
-    """
-
-    answer_numbers = re.findall(
-        r"\d+(?:\.\d+)?",
-        primary_answer
-        or "",
-    )
-
+    answer_numbers = re.findall(r"\d+(?:\.\d+)?", primary_answer or "")
     if not answer_numbers:
         return False
 
-    normalized_question = (
-        question
-        or ""
-    ).casefold()
+    normalized_question = (question or "").casefold()
+    return any(number in normalized_question for number in answer_numbers)
 
-    return any(
-        number
-        in normalized_question
-        for number in answer_numbers
-    )
 
 def _precision_fallback_phrases(
     question: str,
 ) -> list[str]:
-    """
-    Bazı teknik intent'lerde semantic retrieval yerine
-    standartta gerçekten geçen ayırt edici ifadeleri
-    lexical second-pass için kullanır.
+    normalized_question = (question or "").casefold()
 
-    Burada cevap hard-code edilmez.
-    Yalnızca evidence bulmaya yarayan standart ifadeleri
-    tanımlarız.
-    """
-
-    normalized_question = (
-        question
-        or ""
-    ).casefold()
-
-    # -----------------------------------------------------
-    # SERVICE REQUEST
-    # -----------------------------------------------------
-
-    service_request_intent = (
-        "service request"
-        in normalized_question
-        or (
-            "uplink"
-            in normalized_question
-            and any(
-                value
-                in normalized_question
-                for value in (
-                    "yeniden etkinleştir",
-                    "tekrar etkinleştir",
-                    "tekrar aktif",
-                    "activate",
-                    "reactivate",
-                )
+    service_request_intent = "service request" in normalized_question or (
+        "uplink" in normalized_question
+        and any(
+            val in normalized_question
+            for val in (
+                "yeniden etkinleştir",
+                "tekrar etkinleştir",
+                "tekrar aktif",
+                "activate",
+                "reactivate",
             )
         )
     )
 
     if service_request_intent:
-        return [
-            "Service Request procedure is used",
-        ]
+        return ["Service Request procedure is used"]
 
-    # -----------------------------------------------------
-    # HTTP/3 DOCUMENT / RFC
-    # -----------------------------------------------------
-
-    http3_intent = (
-        "http/3"
-        in normalized_question
-        or "http3"
-        in normalized_question
-    )
-
-    specialized_http3_subject = any(
-        value
-        in normalized_question
-        for value in (
-            "websocket",
-            "qpack",
-        )
-    )
+    http3_intent = "http/3" in normalized_question or "http3" in normalized_question
+    specialized_http3_subject = any(val in normalized_question for val in ("websocket", "qpack"))
 
     if (
         http3_intent
         and not specialized_http3_subject
         and any(
-            value
-            in normalized_question
-            for value in (
-                "rfc",
-                "standart",
-                "standard",
-                "doküman",
-                "document",
-                "tanımlan",
-                "defined",
-            )
+            val in normalized_question
+            for val in ("rfc", "standart", "standard", "doküman", "document", "tanımlan", "defined")
         )
     ):
-        return [
-            "This document defines HTTP/3",
-        ]
+        return ["This document defines HTTP/3"]
 
-    # -----------------------------------------------------
-    # QUIC LOSS / RECOVERY / CONGESTION CONTROL
-    # -----------------------------------------------------
-
-    if (
-        "quic"
-        in normalized_question
-        and any(
-            value
-            in normalized_question
-            for value in (
-                "kayıp",
-                "loss",
-                "congestion",
-                "recovery",
-            )
-        )
+    if "quic" in normalized_question and any(
+        val in normalized_question for val in ("kayıp", "loss", "congestion", "recovery")
     ):
-        return [
-            (
-                "This document describes loss detection "
-                "and congestion control mechanisms for QUIC"
-            ),
-        ]
-
-    # -----------------------------------------------------
-    # CELL BROADCAST WARNING CANCELLATION
-    # -----------------------------------------------------
+        return ["This document describes loss detection and congestion control mechanisms for QUIC"]
 
     cell_broadcast_intent = any(
-        value
-        in normalized_question
-        for value in (
-            "cell broadcast",
-            "warning message",
-            "uyarı mesaj",
-        )
+        val in normalized_question for val in ("cell broadcast", "warning message", "uyarı mesaj")
     )
+    cancellation_intent = any(val in normalized_question for val in ("iptal", "cancel", "stop", "durdur"))
 
-    cancellation_intent = any(
-        value
-        in normalized_question
-        for value in (
-            "iptal",
-            "cancel",
-            "stop",
-            "durdur",
-        )
-    )
-
-    if (
-        cell_broadcast_intent
-        and cancellation_intent
-    ):
-        return [
-            (
-                "The cancel warning message delivery "
-                "procedure takes place"
-            ),
-        ]
+    if cell_broadcast_intent and cancellation_intent:
+        return ["The cancel warning message delivery procedure takes place"]
 
     return []
+
 
 def _is_reference_point_question(
     question: str,
 ) -> bool:
-    value = (
-        question
-        or ""
-    ).casefold()
-
-    return (
-        "referans nokta"
-        in value
-        or
-        "reference point"
-        in value
-    )
+    val = (question or "").casefold()
+    return "referans nokta" in val or "reference point" in val
 
 
-def _reference_point_fts_query(
+def _reference_point_fts_queries(
     question: str,
-) -> str | None:
-    """
-    Sorudaki iki endpoint'ten genel bir
-    reference-point FTS sorgusu üretir.
-
-    N1/N3/N4/N11/N12 gibi cevaplar burada
-    bilinmez veya hard-code edilmez.
-    """
-
-    tokens = re.findall(
-        r"\b(?:NG-RAN|[A-Z]{2,}(?:-[A-Z0-9]+)*)\b",
+) -> list[str]:
+    explicit_reference_point = re.search(
+        r"\b(N\d{1,3})\b",
         question or "",
+        flags=re.IGNORECASE,
     )
 
-    excluded = {
-        "5G",
-        "5GS",
-        "TS",
-        "TR",
-        "RFC",
-        "REFERENCE",
-        "POINT",
-        "INTERFACE",
-    }
+    if explicit_reference_point:
+        reference_point = explicit_reference_point.group(1).upper()
+        signalling_question = re.search(
+            r"\b(?:sinyalleş\w*|signall?ing)\b",
+            question or "",
+            flags=re.IGNORECASE,
+        )
 
-    endpoints: list[str] = []
+        if signalling_question:
+            tokens = re.findall(r"\b(?:NG-RAN|[A-Z]{2,}(?:-[A-Z0-9]+)*)\b", question or "")
+            excluded = {"5G", "5GS", "TS", "TR", "RFC", "NAS", "REFERENCE", "POINT", "INTERFACE"}
+            endpoints = [t for t in tokens if t not in excluded]
 
-    for token in tokens:
-        if token in excluded:
-            continue
+            strict_terms = [reference_point, "NAS", *endpoints[:2]]
+            strict_query = " AND ".join(f'"{term}"' for term in strict_terms)
 
-        if token not in endpoints:
-            endpoints.append(
-                token
-            )
+            return [
+                strict_query,
+                f'"{reference_point}" AND "NAS"',
+                f'"{reference_point}" AND "signalling"',
+            ]
+
+        return [f'"{reference_point}" AND "reference point"']
+
+    tokens = re.findall(r"\b(?:NG-RAN|[A-Z]{2,}(?:-[A-Z0-9]+)*)\b", question or "")
+    excluded = {"5G", "5GS", "TS", "TR", "RFC", "REFERENCE", "POINT", "INTERFACE"}
+    endpoints = [t for t in tokens if t not in excluded]
 
     if len(endpoints) < 2:
-        return None
+        return []
 
-    first = endpoints[0]
-    second = endpoints[1]
+    first, second = endpoints[0], endpoints[1]
 
-    # Standartlarda erişim tarafı bazen
-    # NG-RAN, RAN veya (R)AN yazılabiliyor.
-    if first in {
-        "NG-RAN",
-        "RAN",
-    }:
-        return (
-            '"reference point between" '
-            f'AND "{second}"'
-        )
+    if first in {"NG-RAN", "RAN"}:
+        return [f'"reference point between" AND "{second}"']
 
-    if second in {
-        "NG-RAN",
-        "RAN",
-    }:
-        return (
-            '"reference point between" '
-            f'AND "{first}"'
-        )
+    if second in {"NG-RAN", "RAN"}:
+        return [f'"reference point between" AND "{first}"']
 
-    return (
-        '"reference point" '
-        f'AND "{first}" '
-        f'AND "{second}"'
-    )
-
+    return [f'"reference point" AND "{first}" AND "{second}"']
 
 
 def _is_document_question(
     question: str,
 ) -> bool:
-    """
-    Kullanıcının doğrudan bir standart / RFC / doküman
-    kimliği sorduğu soruları ayırır.
+    return infer_answer_type(question) == "STANDART / DOKÜMAN"
 
-    Cevap numarası burada bilinmez; yalnızca cevap türü
-    belirlenir.
-    """
-
-    return (
-        infer_answer_type(
-            question
-        )
-        == "STANDART / DOKÜMAN"
-    )
 
 def _needs_targeted_fallback(
     question: str,
     composition: dict[str, Any],
     rendered: dict[str, Any],
 ) -> bool:
-    """
-    Global retrieval ayarlarını büyütmek yerine,
-    yalnızca gerçekten ihtiyaç duyulan sorularda
-    ikinci retrieval çalıştırır.
-    """
-    if _is_reference_point_question(
-        question
+    if _is_reference_point_question(question):
+        return True
+
+    # Genel NF (Ağ Fonksiyonları) mimari sorularında lexical fallback'i zorunlu kıl
+    if any(
+        re.search(r"\b" + nf + r"\b", question, flags=re.IGNORECASE)
+        for nf in ["amf", "smf", "upf", "ausf", "udm", "pcf", "nssf", "nrf"]
     ):
         return True
 
-    precision_phrases = (
-        _precision_fallback_phrases(
-            question
-        )
-    )
-
+    precision_phrases = _precision_fallback_phrases(question)
     if precision_phrases:
         return True
 
-    # Standart / RFC / doküman kimliği sorularında
-    # normal semantic retrieval doğru cevabı verse bile
-    # başka bir dokümanın References/Overview maddesine
-    # kayma riski yüksek. Precision route'u olmayan
-    # document soruları lexical document discovery'ye gider.
-    if _is_document_question(
-        question
+    if _is_document_question(question):
+        return True
+
+    answer_type = str(composition.get("answer_type", ""))
+    confidence = str(composition.get("confidence", "low"))
+    primary_answer = str(composition.get("primary_answer", "") or "").strip()
+    renderer_success = bool(rendered.get("success", False))
+
+    if answer_type == "DEĞER / LİMİT" and primary_answer and _value_answer_echoes_question(
+        question=question,
+        primary_answer=primary_answer,
     ):
         return True
 
-    answer_type = str(
-        composition.get(
-            "answer_type",
-            "",
-        )
-    )
-
-    confidence = str(
-        composition.get(
-            "confidence",
-            "low",
-        )
-    )
-
-    primary_answer = str(
-        composition.get(
-            "primary_answer",
-            "",
-        )
-        or ""
-    ).strip()
-
-    renderer_success = bool(
-        rendered.get(
-            "success",
-            False,
-        )
-    )
-
-    # -----------------------------------------------------
-    # VALUE IDENTIFIER ECHO
-    # -----------------------------------------------------
-
-    if (
-        answer_type
-        == "DEĞER / LİMİT"
-        and primary_answer
-        and _value_answer_echoes_question(
-            question=question,
-            primary_answer=primary_answer,
-        )
-    ):
-        return True
-
-    # -----------------------------------------------------
-    # LOW / MEDIUM CONFIDENCE
-    # -----------------------------------------------------
-
-    if (
-        answer_type == "DEĞER / LİMİT"
-        and (
-            confidence != "high"
-            or not renderer_success
-        )
-    ):
+    if answer_type == "DEĞER / LİMİT" and (confidence != "high" or not renderer_success):
         return True
 
     return False
@@ -829,144 +428,52 @@ def _needs_targeted_fallback(
 def _document_fallback_candidates(
     question: str,
 ) -> list[dict[str, Any]]:
-    """
-    Standart / RFC sorularında QueryNormalizer'ın teknik
-    expansion'larını FTS5 üzerinde arar.
-
-    Önemli fark:
-    - Orijinal doğal dil sorusu yerine teknik expansion'lar
-      tercih edilir.
-    - Sonuçlar global bm25 ile yeniden sıralanmaz.
-      Variant sırası korunur; Composer böylece aynı
-      dokümana ait tekrarlayan kanıtları birlikte görür.
-    - Cevap numarası hard-code edilmez.
-    """
-
-    search_queries = (
-        retriever
-        .query_normalizer
-        .normalize(
-            question,
-            max_variants=4,
-        )
-    )
-
-    phrase_queries = (
-        search_queries[1:]
-        if len(search_queries) > 1
-        else search_queries
-    )
+    search_queries = retriever.query_normalizer.normalize(question, max_variants=4)
+    phrase_queries = search_queries[1:] if len(search_queries) > 1 else search_queries
 
     if not phrase_queries:
         return []
 
-    print(
-        "[FALLBACK] Document discovery sorguları:",
-        phrase_queries,
-    )
+    print("[FALLBACK] Document discovery sorguları:", phrase_queries)
 
-    candidates: list[
-        dict[str, Any]
-    ] = []
-
+    candidates: list[dict[str, Any]] = []
     seen_chunk_ids: set[str] = set()
 
     for phrase in phrase_queries:
-        results = (
-            lexical_search.search_phrase(
-                phrase=phrase,
-                limit=10,
-            )
-        )
-
-        print(
-            f"[FALLBACK] Document hit "
-            f"'{phrase}': "
-            f"{len(results)}"
-        )
+        words = [w for w in re.findall(r"[A-Za-z0-9]+", phrase) if len(w) > 2]
+        if not words:
+            continue
+        flexible_query = " AND ".join(f'"{w}"' for w in words[:3])
+        
+        results = lexical_search.search_query(query=flexible_query, limit=10)
+        print(f"[FALLBACK] Document hit '{flexible_query}': {len(results)}")
 
         for result in results:
-            chunk_id = str(
-                result.get(
-                    "chunk_id",
-                    "",
-                )
-            )
-
-            if (
-                chunk_id
-                and chunk_id in seen_chunk_ids
-            ):
+            chunk_id = str(result.get("chunk_id", ""))
+            if chunk_id and chunk_id in seen_chunk_ids:
                 continue
-
             if chunk_id:
-                seen_chunk_ids.add(
-                    chunk_id
-                )
+                seen_chunk_ids.add(chunk_id)
+            candidates.append(result)
 
-            candidates.append(
-                result
-            )
-
-    print(
-        "[FALLBACK] Document toplam unique aday:",
-        len(candidates),
-    )
-
-    return candidates[
-        :DOCUMENT_FALLBACK_COMPOSER_TOP_K
-    ]
+    print("[FALLBACK] Document toplam unique aday:", len(candidates))
+    return candidates[:DOCUMENT_FALLBACK_COMPOSER_TOP_K]
 
 
 def _parse_primary_document_identity(
     primary_answer: str,
 ) -> tuple[str, str] | None:
-    """
-    Composer'ın doküman cevabını Chroma metadata
-    kimliğine çevirir.
-
-    Örnek:
-        RFC 9204
-            -> ("IETF", "9204")
-
-        3GPP TS 23.502
-            -> ("3GPP", "TS 23.502")
-    """
-
-    answer = (
-        primary_answer
-        or ""
-    ).strip()
-
+    answer = (primary_answer or "").strip()
     if not answer:
         return None
 
-    rfc_match = re.fullmatch(
-        r"RFC\s+(\d+)",
-        answer,
-        flags=re.IGNORECASE,
-    )
-
+    rfc_match = re.fullmatch(r"RFC\s+(\d+)", answer, flags=re.IGNORECASE)
     if rfc_match:
-        return (
-            "IETF",
-            rfc_match.group(1),
-        )
+        return ("IETF", rfc_match.group(1))
 
-    spec_match = re.fullmatch(
-        r"(3GPP|ETSI)\s+(TS|TR)\s+([\d.]+)",
-        answer,
-        flags=re.IGNORECASE,
-    )
-
+    spec_match = re.fullmatch(r"(3GPP|ETSI)\s+(TS|TR)\s+([\d.]+)", answer, flags=re.IGNORECASE)
     if spec_match:
-        return (
-            spec_match.group(1).upper(),
-            (
-                f"{spec_match.group(2).upper()} "
-                f"{spec_match.group(3)}"
-            ),
-        )
+        return (spec_match.group(1).upper(), f"{spec_match.group(2).upper()} {spec_match.group(3)}")
 
     return None
 
@@ -974,59 +481,18 @@ def _parse_primary_document_identity(
 def _document_source_quality_score(
     result: dict[str, Any],
 ) -> float:
-    """
-    Dokümanın kendisini tanımlayan maddeleri kaynak kartında
-    öne çıkarır.
-
-    Scope / Introduction / Overview ve "this/present document"
-    türü self-definition ifadeleri güçlüdür. References bölümleri
-    ise doküman kimliğini göstermek için daha zayıf kanıttır.
-    """
-
-    metadata = result.get(
-        "metadata",
-        {},
-    )
-
-    clause_title = str(
-        metadata.get(
-            "clause_title",
-            "",
-        )
-        or ""
-    ).casefold()
-
-    text = str(
-        result.get(
-            "text",
-            "",
-        )
-        or ""
-    ).casefold()
+    metadata = result.get("metadata", {})
+    clause_title = str(metadata.get("clause_title", "") or "").casefold()
+    text = str(result.get("text", "") or "").casefold()
 
     score = 0.0
-
     if "scope" in clause_title:
         score += 10.0
-
-    if any(
-        value in clause_title
-        for value in (
-            "introduction",
-            "overview",
-        )
-    ):
+    if any(val in clause_title for val in ("introduction", "overview")):
         score += 7.0
-
     if "reference" in clause_title:
         score -= 10.0
-
-    if re.search(
-        r"\b(?:this document|the present document)\s+"
-        r"(?:defines|specifies|describes)\b",
-        text,
-        flags=re.IGNORECASE,
-    ):
+    if re.search(r"\b(?:this document|the present document)\s+(?:defines|specifies|describes)\b", text, flags=re.IGNORECASE):
         score += 10.0
 
     return score
@@ -1037,131 +503,50 @@ def _fetch_primary_document_sources(
     primary_answer: str,
     limit: int = 4,
 ) -> list[dict[str, Any]]:
-    """
-    Composer doğru doküman kimliğini cross-reference
-    üzerinden bulmuş olsa bile lexical candidate havuzunda
-    hedef dokümanın kendi chunk'ları bulunmayabilir.
-
-    Bu durumda hedef dokümanı metadata ile doğrudan Chroma'dan
-    bulur ve yalnızca kaynak gösterimi için en ilgili chunk'ları
-    seçer.
-
-    Hedef doküman DB'de yoksa boş liste döner.
-    Örneğin RFC 8999 yerel indexte yoksa mevcut cross-reference
-    kaynağı kullanılmaya devam eder.
-    """
-
-    identity = (
-        _parse_primary_document_identity(
-            primary_answer
-        )
-    )
-
+    identity = _parse_primary_document_identity(primary_answer)
     if identity is None:
         return []
 
     org, code = identity
 
     try:
-        result = (
-            retriever.collection.get(
-                where={
-                    "$and": [
-                        {"org": org},
-                        {"code": code},
-                    ]
-                },
-                limit=40,
-                include=[
-                    "documents",
-                    "metadatas",
-                ],
-            )
+        result = retriever.collection.get(
+            where={"code": code},
+            limit=40,
+            include=["documents", "metadatas"],
         )
     except Exception as error:
-        print(
-            "[SOURCE] Primary document lookup failed:",
-            error,
-        )
+        print("[SOURCE] Primary document lookup failed:", error)
         return []
 
-    candidates: list[
-        dict[str, Any]
-    ] = []
-
-    for (
-        chunk_id,
-        document,
-        metadata,
-    ) in zip(
-        result.get(
-            "ids",
-            [],
-        ),
-        result.get(
-            "documents",
-            [],
-        ),
-        result.get(
-            "metadatas",
-            [],
-        ),
+    candidates: list[dict[str, Any]] = []
+    for chunk_id, document, metadata in zip(
+        result.get("ids", []),
+        result.get("documents", []),
+        result.get("metadatas", []),
     ):
-        clean_text = (
-            document
-            or ""
-        ).strip()
+        clean_text = (document or "").strip()
+        clean_metadata = metadata or {}
 
-        clean_metadata = (
-            metadata
-            or {}
-        )
-
-        if not clean_text:
+        if not clean_text or clean_metadata.get("status") not in {"available", "indexed"}:
             continue
 
-        if clean_metadata.get(
-            "status"
-        ) not in {
-            "available",
-            "indexed",
-        }:
+        if clean_metadata.get("org", "").upper() != org.upper():
             continue
 
-        candidates.append(
-            {
-                "chunk_id": chunk_id,
-                "text": clean_text,
-                "metadata": clean_metadata,
-                "distance": 0.0,
-            }
-        )
+        candidates.append({
+            "chunk_id": chunk_id,
+            "text": clean_text,
+            "metadata": clean_metadata,
+            "distance": 0.0,
+        })
 
-    candidates = (
-        _deduplicate_results(
-            candidates
-        )
-    )
-
+    candidates = _deduplicate_results(candidates)
     if not candidates:
         return []
 
-    # Doküman kimliği sorularında References maddesinden ziyade
-    # Scope / Introduction / Overview gibi dokümanın kendi kapsamını
-    # tanımlayan bölümleri tercih et.
-    quality_candidates = [
-        candidate
-        for candidate in candidates
-        if _document_source_quality_score(
-            candidate
-        ) > 0.0
-    ]
-
-    rerank_pool = (
-        quality_candidates
-        if quality_candidates
-        else candidates
-    )
+    quality_candidates = [c for c in candidates if _document_source_quality_score(c) > 0.0]
+    rerank_pool = quality_candidates if quality_candidates else candidates
 
     if len(rerank_pool) == 1:
         return rerank_pool[:limit]
@@ -1170,30 +555,14 @@ def _fetch_primary_document_sources(
         ranked = reranker.rerank(
             query=question,
             candidates=rerank_pool,
-            top_k=min(
-                limit,
-                len(rerank_pool),
-            ),
+            top_k=min(limit, len(rerank_pool)),
         )
-
         if ranked:
-            return sorted(
-                ranked,
-                key=_document_source_quality_score,
-                reverse=True,
-            )[:limit]
-
+            return sorted(ranked, key=_document_source_quality_score, reverse=True)[:limit]
     except Exception as error:
-        print(
-            "[SOURCE] Primary document rerank failed:",
-            error,
-        )
+        print("[SOURCE] Primary document rerank failed:", error)
 
-    return sorted(
-        rerank_pool,
-        key=_document_source_quality_score,
-        reverse=True,
-    )[:limit]
+    return sorted(rerank_pool, key=_document_source_quality_score, reverse=True)[:limit]
 
 
 def _select_document_source_results(
@@ -1202,138 +571,45 @@ def _select_document_source_results(
     question: str = "",
     limit: int = 4,
 ) -> list[dict[str, Any]]:
-    """
-    Document Composer'ın seçtiği ana cevabı kullanıcıya
-    gösterilen kaynaklarla hizalar.
-
-    Öncelik:
-    1. Candidate havuzunda hedef dokümanın kendi chunk'ı.
-    2. Hedef dokümanı Chroma metadata'sından doğrudan bulma.
-    3. Hedef dokümanı açıkça referanslayan cross-reference chunk'ı.
-    4. Mevcut candidate havuzu.
-
-    Böylece:
-        cevap = 3GPP TS 23.502
-    ise mümkün olduğunda kaynak kartında da TS 23.502 gösterilir.
-
-    RFC 8999 gibi hedef doküman DB'de yoksa cross-reference
-    kanıtı korunur.
-    """
-
-    answer = (
-        primary_answer
-        or ""
-    ).strip()
-
+    answer = (primary_answer or "").strip()
     if not answer:
         return results[:limit]
 
-    identity = (
-        _parse_primary_document_identity(
-            answer
-        )
-    )
-
-    direct_matches: list[
-        dict[str, Any]
-    ] = []
+    identity = _parse_primary_document_identity(answer)
+    direct_matches: list[dict[str, Any]] = []
 
     if identity is not None:
-        expected_org, expected_code = (
-            identity
-        )
-
+        expected_org, expected_code = identity
         for result in results:
-            metadata = result.get(
-                "metadata",
-                {},
-            )
+            metadata = result.get("metadata", {})
+            org = str(metadata.get("org", "") or "").strip()
+            code = str(metadata.get("code", "") or "").strip()
 
-            org = str(
-                metadata.get(
-                    "org",
-                    "",
-                )
-                or ""
-            ).strip()
+            if org.casefold() == expected_org.casefold() and code.casefold() == expected_code.casefold():
+                direct_matches.append(result)
 
-            code = str(
-                metadata.get(
-                    "code",
-                    "",
-                )
-                or ""
-            ).strip()
-
-            if (
-                org.casefold()
-                == expected_org.casefold()
-                and code.casefold()
-                == expected_code.casefold()
-            ):
-                direct_matches.append(
-                    result
-                )
-
-    # Kaynak paneli için hedef dokümanın kendi Scope / Introduction
-    # gibi daha açıklayıcı maddelerini DB'den çekmeyi önce dene.
-    # Böylece fallback havuzunda yalnızca References maddesi varsa
-    # kullanıcıya onu dört kez göstermek yerine daha anlamlı kaynak
-    # kartı sunulur.
     if question:
-        hydrated_matches = (
-            _fetch_primary_document_sources(
-                question=question,
-                primary_answer=answer,
-                limit=limit,
-            )
+        hydrated_matches = _fetch_primary_document_sources(
+            question=question,
+            primary_answer=answer,
+            limit=limit,
         )
-
         if hydrated_matches:
-            print(
-                "[SOURCE] Primary document hydrated:",
-                answer,
-                "| chunk:",
-                len(hydrated_matches),
-            )
+            print("[SOURCE] Primary document hydrated:", answer, "| chunk:", len(hydrated_matches))
             return hydrated_matches
 
     if direct_matches:
-        return _deduplicate_results(
-            direct_matches
-        )[:limit]
+        return _deduplicate_results(direct_matches)[:limit]
 
-    # Cross-reference fallback:
-    # Hedef dokümanın kendisi indexte olmayabilir.
-    answer_tokens = [
-        answer,
-    ]
-
-    rfc_match = re.fullmatch(
-        r"RFC\s+(\d+)",
-        answer,
-        flags=re.IGNORECASE,
-    )
-
+    answer_tokens = [answer]
+    rfc_match = re.fullmatch(r"RFC\s+(\d+)", answer, flags=re.IGNORECASE)
     if rfc_match:
-        answer_tokens.append(
-            f"RFC{rfc_match.group(1)}"
-        )
+        answer_tokens.append(f"RFC{rfc_match.group(1)}")
 
     referenced_matches = [
         result
         for result in results
-        if any(
-            token.casefold()
-            in str(
-                result.get(
-                    "text",
-                    "",
-                )
-                or ""
-            ).casefold()
-            for token in answer_tokens
-        )
+        if any(token.casefold() in str(result.get("text", "") or "").casefold() for token in answer_tokens)
     ]
 
     if referenced_matches:
@@ -1341,163 +617,158 @@ def _select_document_source_results(
 
     return results[:limit]
 
+
 def _targeted_fallback_retrieval(
     question: str,
 ) -> list[dict[str, Any]]:
-    """
-    Kontrollü lexical second-pass retrieval.
+    reference_queries = _reference_point_fts_queries(question)
+    technical_variants = retriever.query_normalizer.normalize(question, max_variants=4)[1:]
 
-    Normal semantic Retriever'a dokunmaz.
+    for reference_query in reference_queries:
+        print("[FALLBACK] Reference-point FTS:", reference_query)
+        reference_results = lexical_search.search_query(query=reference_query, limit=20)
 
-    QueryNormalizer'ın ürettiği teknik İngilizce
-    varyantları SQLite FTS5 üzerinde phrase search
-    olarak arar.
+        if not reference_results:
+            continue
 
-    Örnek:
-        E.164 number maximum length
-        document defines version 1 of QUIC
-    """
-    reference_query = (
-        _reference_point_fts_query(
-            question
-        )
-    )
-
-    if reference_query:
-        print(
-            "[FALLBACK] Reference-point FTS:",
-            reference_query,
+        reference_results = _prefer_content_results(
+            question,
+            _deduplicate_results(reference_results),
         )
 
-        reference_results = (
-            lexical_search.search_query(
-                query=reference_query,
-                limit=20,
+        constraint = extract_document_constraint(question)
+        if constraint:
+            reference_results = [
+                result
+                for result in reference_results
+                if result_matches_document_constraint(result, constraint)
+            ]
+
+        if not reference_results:
+            continue
+
+        enriched_reference_results: list[dict[str, Any]] = []
+        for result in reference_results:
+            enriched = dict(result)
+            matched_queries = list(enriched.get("matched_queries", []))
+            for variant in technical_variants:
+                if variant not in matched_queries:
+                    matched_queries.append(variant)
+            enriched["matched_queries"] = matched_queries
+            enriched_reference_results.append(enriched)
+
+        reference_results = enriched_reference_results
+        print("[FALLBACK] Reference-point aday:", len(reference_results))
+
+        try:
+            ranked_reference_results = reranker.rerank(
+                query=question,
+                candidates=reference_results,
+                top_k=min(FALLBACK_COMPOSER_TOP_K, len(reference_results)),
             )
-        )
 
-        if reference_results:
-            print(
-                "[FALLBACK] Reference-point aday:",
-                len(reference_results),
-            )
+            for index, result in enumerate(ranked_reference_results, start=1):
+                metadata = result.get("metadata", {})
+                print(
+                    f"[FALLBACK RERANK] {index}. "
+                    f"{metadata.get('org', 'Bilinmiyor')} "
+                    f"{metadata.get('code', 'Bilinmiyor')} | "
+                    f"Madde {metadata.get('clause', 'Bilinmiyor')} | "
+                    f"Skor: {float(result.get('rerank_score', 0.0)):.4f}"
+                )
 
-            return reference_results
+            return ranked_reference_results
+        except Exception as error:
+            print("[FALLBACK] Reference-point rerank failed:", error)
+            return reference_results[:FALLBACK_COMPOSER_TOP_K]
 
-    precision_phrases = (
-        _precision_fallback_phrases(
-            question
-        )
-    )
+    precision_phrases = _precision_fallback_phrases(question)
 
     if precision_phrases:
-        phrase_queries = (
-            precision_phrases
-        )
-
-        print(
-            "[FALLBACK] Precision lexical route:",
-            phrase_queries,
-        )
-
-    elif _is_document_question(
-        question
-    ):
-        return (
-            _document_fallback_candidates(
-                question
-            )
-        )
-
+        phrase_queries = precision_phrases
+        print("[FALLBACK] Precision lexical route:", phrase_queries)
+    elif _is_document_question(question):
+        return _document_fallback_candidates(question)
     else:
-        search_queries = (
-            retriever
-            .query_normalizer
-            .normalize(
-                question,
-                max_variants=4,
-            )
-        )
-
-        # Orijinal kullanıcı sorusunu değil,
-        # teknik expansion'ları lexical fallback'te kullan.
-        phrase_queries = (
-            search_queries[1:]
-            if len(search_queries) > 1
-            else []
-        )
+        search_queries = retriever.query_normalizer.normalize(question, max_variants=4)
+        phrase_queries = search_queries[1:] if len(search_queries) > 1 else []
 
     if not phrase_queries:
         return []
 
-    print(
-        "[FALLBACK] FTS5 phrase sorguları:",
-        phrase_queries,
-    )
+    print("[FALLBACK] FTS5 phrase sorguları:", phrase_queries)
 
-    candidates: list[
-        dict[str, Any]
-    ] = []
-
+    candidates: list[dict[str, Any]] = []
     seen_chunk_ids: set[str] = set()
 
     for phrase in phrase_queries:
-        results = (
-            lexical_search.search_phrase(
-                phrase=phrase,
-                limit=10,
-            )
+        words = [w for w in re.findall(r"[A-Za-z0-9]+", phrase) if len(w) > 2]
+        if not words:
+            continue
+        flexible_query = " AND ".join(f'"{w}"' for w in words[:3])
+
+        results = lexical_search.search_query(
+            query=flexible_query,
+            limit=20,
         )
 
-        print(
-            f"[FALLBACK] FTS5 hit "
-            f"'{phrase}': "
-            f"{len(results)}"
-        )
+        print(f"[FALLBACK] FTS5 hit '{flexible_query}': {len(results)}")
 
         for result in results:
-            chunk_id = str(
-                result.get(
-                    "chunk_id",
-                    "",
-                )
-            )
-
-            if (
-                chunk_id
-                and chunk_id
-                in seen_chunk_ids
-            ):
+            chunk_id = str(result.get("chunk_id", ""))
+            if chunk_id and chunk_id in seen_chunk_ids:
                 continue
-
             if chunk_id:
-                seen_chunk_ids.add(
-                    chunk_id
-                )
+                seen_chunk_ids.add(chunk_id)
+            candidates.append(result)
 
-            candidates.append(
-                result
-            )
+    candidates = _prefer_content_results(
+        question,
+        _deduplicate_results(candidates),
+    )
 
-    # FTS5 bm25 için daha küçük / daha negatif
-    # lexical_score daha güçlü sonuçtur.
-    candidates.sort(
-        key=lambda item: float(
-            item.get(
-                "lexical_score",
-                0.0,
-            )
+    constraint = extract_document_constraint(question)
+    if constraint:
+        candidates = [
+            result
+            for result in candidates
+            if result_matches_document_constraint(result, constraint)
+        ]
+
+    candidates = _deduplicate_results(candidates)
+    print("[FALLBACK] FTS5 toplam unique aday:", len(candidates))
+
+    if not candidates:
+        return []
+
+    try:
+        # CrossEncoder'ın doğru skor üretmesi için teknik varyantı kullan
+        rerank_query = technical_variants[0] if technical_variants else question
+
+        # Lexical sonuçlara matched_queries ekle
+        enriched_candidates = []
+        for candidate in candidates:
+            enriched = dict(candidate)
+            matched = list(enriched.get("matched_queries", []))
+            for v in technical_variants:
+                if v not in matched:
+                    matched.append(v)
+            enriched["matched_queries"] = matched
+            enriched_candidates.append(enriched)
+
+        ranked_candidates = reranker.rerank(
+            query=rerank_query,
+            candidates=enriched_candidates,
+            top_k=FALLBACK_COMPOSER_TOP_K,
         )
-    )
+        for idx, res in enumerate(ranked_candidates, start=1):
+            meta = res.get("metadata", {})
+            print(f"[FALLBACK RERANK] {idx}. {meta.get('code')} | Madde {meta.get('clause')} | Skor: {float(res.get('rerank_score', 0.0)):.4f}")
+        return ranked_candidates
+    except Exception as err:
+        print("[FALLBACK] Rerank hatası:", err)
+        return candidates[:FALLBACK_COMPOSER_TOP_K]
 
-    print(
-        "[FALLBACK] FTS5 toplam unique aday:",
-        len(candidates),
-    )
-
-    return candidates[
-        :FALLBACK_COMPOSER_TOP_K
-    ]
 
 # =========================================================
 # PERFORMANCE PRINTER
@@ -1516,79 +787,93 @@ def _print_performance(
     total_time: float,
 ) -> None:
     print()
-
-    print(
-        "=" * 50
-    )
-
-    print(
-        "[PERF] Paradoks Pipeline"
-    )
-
-    print(
-        f"[PERF] Retrieval: "
-        f"{retrieval_time:.2f} sn"
-    )
-
-    print(
-        f"[PERF] Reranker: "
-        f"{reranker_time:.2f} sn"
-    )
-
-    print(
-        f"[PERF] Composer + Renderer: "
-        f"{composer_time:.4f} sn"
-    )
-
-    print(
-        f"[PERF] Targeted fallback: "
-        f"{fallback_time:.2f} sn"
-    )
-
-    print(
-        f"[PERF] Prompt: "
-        f"{prompt_time:.4f} sn"
-    )
-
-    print(
-        f"[PERF] Ollama: "
-        f"{ollama_time:.2f} sn"
-    )
-
-    print(
-        f"[PERF] Answer Guard CPU: "
-        f"{guard_time:.4f} sn"
-    )
-
-    print(
-        "[PERF] Deterministic cevap:",
-        (
-            "EVET"
-            if deterministic_used
-            else "HAYIR"
-        ),
-    )
-
-    print(
-        "[PERF] Guard repair:",
-        (
-            "EVET"
-            if repair_used
-            else "HAYIR"
-        ),
-    )
-
-    print(
-        f"[PERF] Total: "
-        f"{total_time:.2f} sn"
-    )
-
-    print(
-        "=" * 50
-    )
-
+    print("=" * 50)
+    print("[PERF] Paradoks Pipeline")
+    print(f"[PERF] Retrieval: {retrieval_time:.2f} sn")
+    print(f"[PERF] Reranker: {reranker_time:.2f} sn")
+    print(f"[PERF] Composer + Renderer: {composer_time:.4f} sn")
+    print(f"[PERF] Targeted fallback: {fallback_time:.2f} sn")
+    print(f"[PERF] Prompt: {prompt_time:.4f} sn")
+    print(f"[PERF] Ollama: {ollama_time:.2f} sn")
+    print(f"[PERF] Answer Guard CPU: {guard_time:.4f} sn")
+    print("[PERF] Deterministic cevap:", "EVET" if deterministic_used else "HAYIR")
+    print("[PERF] Guard repair:", "EVET" if repair_used else "HAYIR")
+    print(f"[PERF] Total: {total_time:.2f} sn")
+    print("=" * 50)
     print()
 
+
+def _fallback_scores_are_usable(
+    results: list[dict[str, Any]],
+) -> bool:
+    if not results:
+        return False
+
+    scores: list[float] = []
+    for result in results:
+        if "rerank_score" not in result:
+            continue
+        try:
+            scores.append(float(result["rerank_score"]))
+        except (TypeError, ValueError):
+            continue
+
+    if not scores:
+        return True
+
+    return max(scores) >= 0.0
+
+
+def _best_rerank_score(
+    results: list[dict[str, Any]],
+) -> float | None:
+    scores: list[float] = []
+    for result in results:
+        if "rerank_score" not in result:
+            continue
+        try:
+            scores.append(float(result["rerank_score"]))
+        except (TypeError, ValueError):
+            continue
+
+    return max(scores) if scores else None
+
+
+def _fallback_outperforms_normal_evidence(
+    fallback_results: list[dict[str, Any]],
+    normal_results: list[dict[str, Any]],
+    question: str = "",
+) -> bool:
+    if not fallback_results:
+        return False
+    if not normal_results:
+        return True
+
+    # 1. Normal evidence bir Teknik Rapor (TR) ise ve fallback'te TS standardı varsa fallback üstündür
+    normal_code = str(normal_results[0].get("metadata", {}).get("code", "")).upper()
+    fallback_code = str(fallback_results[0].get("metadata", {}).get("code", "")).upper()
+    
+    if "TR " in normal_code and "TS " in fallback_code:
+        print(f"[EVIDENCE GATE] Normal evidence TR ({normal_code}) olduğu için TS fallback ({fallback_code}) tercih edildi.")
+        return True
+
+    # 2. Ağ fonksiyonu uyumsuzluğu kontrolü
+    nf_match = re.search(r"\b(AMF|SMF|UPF|AUSF|UDM|PCF|NSSF|NRF)\b", question or "", flags=re.IGNORECASE)
+    if nf_match:
+        target_nf = nf_match.group(1).upper()
+        normal_first_title = str(normal_results[0].get("metadata", {}).get("clause_title", "")).upper()
+        
+        if target_nf not in normal_first_title and any(other in normal_first_title for other in ["AMF", "SMF", "UPF"] if other != target_nf):
+            print(f"[EVIDENCE GATE] Entity uyuşmazlığı tespit edildi, fallback tercih ediliyor.")
+            return True
+
+    fallback_score = _best_rerank_score(fallback_results)
+    normal_score = _best_rerank_score(normal_results)
+
+    if fallback_score is None or normal_score is None:
+        return True
+
+    return fallback_score >= normal_score
 
 # =========================================================
 # MAIN PIPELINE
@@ -1597,28 +882,7 @@ def _print_performance(
 def generate_reply(
     message: str,
 ) -> dict[str, Any]:
-    """
-    Paradoks soru-cevap pipeline'ı.
-
-    Akış:
-
-    1. Normal retrieval
-    2. Status filtreleme
-    3. Duplicate temizleme
-    4. Reranker
-    5. Composer
-    6. Renderer
-    7. Güvenilir deterministic cevap varsa direkt dön
-    8. Gerekirse controlled second-pass retrieval
-    9. Hâlâ deterministic cevap yoksa Ollama
-    10. Answer Guard
-    11. Gerekirse tek repair denemesi
-    12. Kaynak metadata'larını döndür
-    """
-
-    total_start = (
-        time.perf_counter()
-    )
+    total_start = time.perf_counter()
 
     reranker_time = 0.0
     composer_time = 0.0
@@ -1630,66 +894,40 @@ def generate_reply(
     repair_used = False
     deterministic_used = False
 
-    # -----------------------------------------------------
-    # NORMAL RETRIEVAL
-    # -----------------------------------------------------
+    document_constraint = extract_document_constraint(message)
+    retrieval_where = build_chroma_where(document_constraint)
 
-    retrieval_start = (
-        time.perf_counter()
-    )
+    if document_constraint:
+        print("[PIPELINE] Açık doküman filtresi:", document_constraint)
 
+    retrieval_start = time.perf_counter()
     results = retriever.search(
         query=message,
         top_k=RETRIEVAL_TOP_K,
+        where=retrieval_where,
     )
+    retrieval_time = time.perf_counter() - retrieval_start
 
-    retrieval_time = (
-        time.perf_counter()
-        - retrieval_start
-    )
+    available_results = _filter_available_results(results)
+    blocked_results = _filter_blocked_results(results)
+    available_results = _deduplicate_results(available_results)
 
-    available_results = (
-        _filter_available_results(
-            results
-        )
-    )
+    if document_constraint:
+        available_results = [
+            result
+            for result in available_results
+            if result_matches_document_constraint(result, document_constraint)
+        ]
 
-    blocked_results = (
-        _filter_blocked_results(
-            results
-        )
-    )
+    available_results = _prefer_content_results(message, available_results)
 
-    available_results = (
-        _deduplicate_results(
-            available_results
-        )
-    )
-
-    print(
-        "[PIPELINE] Retrieval aday:",
-        len(results),
-    )
-
-    print(
-        "[PIPELINE] Kullanılabilir unique aday:",
-        len(available_results),
-    )
-
-    # -----------------------------------------------------
-    # NO SOURCES
-    # -----------------------------------------------------
+    print("[PIPELINE] Retrieval aday:", len(results))
+    print("[PIPELINE] Kullanılabilir unique aday:", len(available_results))
 
     if not available_results:
-        total_time = (
-            time.perf_counter()
-            - total_start
-        )
-
+        total_time = time.perf_counter() - total_start
         _print_performance(
-            retrieval_time=(
-                retrieval_time
-            ),
+            retrieval_time=retrieval_time,
             reranker_time=0.0,
             composer_time=0.0,
             fallback_time=0.0,
@@ -1700,152 +938,63 @@ def generate_reply(
             deterministic_used=False,
             total_time=total_time,
         )
-
         return {
-            "reply": (
-                "Bu soruyu yanıtlamak için "
-                "erişilebilir bir standart "
-                "maddesi bulunamadı."
-            ),
+            "reply": "Bu soruyu yanıtlamak için erişilebilir bir standart maddesi bulunamadı.",
             "sources": [],
-            "blocked_sources": (
-                _build_blocked_sources(
-                    blocked_results
-                )
-            ),
+            "blocked_sources": _build_blocked_sources(blocked_results),
         }
 
-    # -----------------------------------------------------
-    # NORMAL RERANKER
-    # -----------------------------------------------------
-
-    reranker_start = (
-        time.perf_counter()
-    )
-
-    if len(
-        available_results
-    ) == 1:
-        reranked_results = (
-            available_results
-        )
-
+    reranker_start = time.perf_counter()
+    if len(available_results) == 1:
+        reranked_results = available_results
     else:
-        reranked_results = (
-            reranker.rerank(
-                query=message,
-                candidates=(
-                    available_results
-                ),
-                top_k=PROMPT_TOP_K,
-            )
+        reranked_results = reranker.rerank(
+            query=message,
+            candidates=available_results,
+            top_k=PROMPT_TOP_K,
+        )
+    reranker_time = time.perf_counter() - reranker_start
+
+    prompt_results = _select_prompt_results(message, reranked_results)
+    print("[PIPELINE] Normal evidence chunk:", len(prompt_results))
+
+    for index, result in enumerate(prompt_results, start=1):
+        metadata = result.get("metadata", {})
+        print(
+            f"[RERANK] {index}. "
+            f"{metadata.get('org', 'Bilinmiyor')} "
+            f"{metadata.get('code', 'Bilinmiyor')} | "
+            f"Madde {metadata.get('clause', 'Bilinmiyor')} | "
+            f"Başlık: {metadata.get('clause_title', '')} | "
+            f"Skor: {float(result.get('rerank_score', 0.0)):.4f}"
         )
 
-    reranker_time = (
-        time.perf_counter()
-        - reranker_start
+    composer_start = time.perf_counter()
+    composition, rendered = _compose_and_render(question=message, chunks=prompt_results)
+    composer_time += time.perf_counter() - composer_start
+
+    print("[COMPOSER] Answer type:", composition.get("answer_type"))
+    print("[COMPOSER] Primary:", composition.get("primary_answer"))
+    print("[COMPOSER] Confidence:", composition.get("confidence"))
+
+    fallback_required = _needs_targeted_fallback(
+        question=message,
+        composition=composition,
+        rendered=rendered,
     )
 
-    prompt_results = (
-        reranked_results[
-            :PROMPT_TOP_K
-        ]
-    )
-
-    print(
-        "[PIPELINE] Normal evidence chunk:",
-        len(prompt_results),
-    )
-
-    # -----------------------------------------------------
-    # NORMAL COMPOSER + RENDERER
-    # -----------------------------------------------------
-
-    composer_start = (
-        time.perf_counter()
-    )
-
-    (
+    if not fallback_required and _can_use_fast_path(
+        message,
         composition,
         rendered,
-    ) = _compose_and_render(
-        question=message,
-        chunks=prompt_results,
-    )
-
-    composer_time += (
-        time.perf_counter()
-        - composer_start
-    )
-
-    print(
-        "[COMPOSER] Answer type:",
-        composition.get(
-            "answer_type",
-        ),
-    )
-
-    print(
-        "[COMPOSER] Primary:",
-        composition.get(
-            "primary_answer",
-        ),
-    )
-
-    print(
-        "[COMPOSER] Confidence:",
-        composition.get(
-            "confidence",
-        ),
-    )
-
-    # -----------------------------------------------------
-    # TARGETED FALLBACK GEREKİYOR MU?
-    # -----------------------------------------------------
-
-    fallback_required = (
-        _needs_targeted_fallback(
-            question=message,
-            composition=composition,
-            rendered=rendered,
-        )
-    )
-
-    # -----------------------------------------------------
-    # NORMAL FAST PATH
-    # -----------------------------------------------------
-
-    if (
-        not fallback_required
-        and _can_use_fast_path(
-            composition,
-            rendered,
-        )
     ):
         deterministic_used = True
-
-        reply = str(
-            rendered.get(
-                "reply",
-                "",
-            )
-        )
-
-        total_time = (
-            time.perf_counter()
-            - total_start
-        )
-
+        reply = str(rendered.get("reply", ""))
+        total_time = time.perf_counter() - total_start
         _print_performance(
-            retrieval_time=(
-                retrieval_time
-            ),
-            reranker_time=(
-                reranker_time
-            ),
-            composer_time=(
-                composer_time
-            ),
+            retrieval_time=retrieval_time,
+            reranker_time=reranker_time,
+            composer_time=composer_time,
             fallback_time=0.0,
             prompt_time=0.0,
             ollama_time=0.0,
@@ -1854,156 +1003,50 @@ def generate_reply(
             deterministic_used=True,
             total_time=total_time,
         )
-
         return {
             "reply": reply,
-            "sources": (
-                _build_sources(
-                    prompt_results
-                )
-            ),
-            "blocked_sources": (
-                _build_blocked_sources(
-                    blocked_results
-                )
-            ),
+            "sources": _build_sources(prompt_results),
+            "blocked_sources": _build_blocked_sources(blocked_results),
         }
 
-    # -----------------------------------------------------
-    # CONTROLLED SECOND PASS
-    # -----------------------------------------------------
-
-    fallback_prompt_results: list[
-        dict[str, Any]
-    ] = []
-
-    fallback_composition: dict[
-        str,
-        Any
-    ] = {}
-
-    fallback_rendered: dict[
-        str,
-        Any
-    ] = {}
+    fallback_prompt_results: list[dict[str, Any]] = []
+    fallback_composition: dict[str, Any] = {}
+    fallback_rendered: dict[str, Any] = {}
 
     if fallback_required:
-        print(
-            "[FALLBACK] Targeted second-pass retrieval başlıyor."
-        )
+        print("[FALLBACK] Targeted second-pass retrieval başlıyor.")
+        fallback_start = time.perf_counter()
+        fallback_results = _targeted_fallback_retrieval(message)
+        fallback_time += time.perf_counter() - fallback_start
 
-        fallback_start = (
-            time.perf_counter()
-        )
+        fallback_prompt_results = fallback_results[:FALLBACK_COMPOSER_TOP_K]
+        fallback_composer_results = fallback_prompt_results
 
-        fallback_results = (
-            _targeted_fallback_retrieval(
-                message
-            )
-        )
+        if str(composition.get("answer_type", "")) == "STANDART / DOKÜMAN":
+            fallback_composer_results = fallback_results[:DOCUMENT_FALLBACK_COMPOSER_TOP_K]
 
-        fallback_time += (
-            time.perf_counter()
-            - fallback_start
-        )
-
-        fallback_prompt_results = (
-            fallback_results[
-                :FALLBACK_COMPOSER_TOP_K
-            ]
-        )
-
-        fallback_composer_results = (
-            fallback_prompt_results
-        )
-
-        if (
-            str(
-                composition.get(
-                    "answer_type",
-                    "",
-                )
-            )
-            == "STANDART / DOKÜMAN"
-        ):
-            fallback_composer_results = (
-                fallback_results[
-                    :DOCUMENT_FALLBACK_COMPOSER_TOP_K
-                ]
-            )
-
-        print(
-            "[FALLBACK] Composer evidence chunk:",
-            len(
-                fallback_composer_results
-            ),
-        )
+        print("[FALLBACK] Composer evidence chunk:", len(fallback_composer_results))
 
         if fallback_composer_results:
-            fallback_composer_start = (
-                time.perf_counter()
-            )
-
-            (
-                fallback_composition,
-                fallback_rendered,
-            ) = _compose_and_render(
+            fallback_composer_start = time.perf_counter()
+            fallback_composition, fallback_rendered = _compose_and_render(
                 question=message,
-                chunks=(
-                    fallback_composer_results
-                ),
+                chunks=fallback_composer_results,
             )
+            composer_time += time.perf_counter() - fallback_composer_start
 
-            composer_time += (
-                time.perf_counter()
-                - fallback_composer_start
-            )
+            print("[FALLBACK COMPOSER] Primary:", fallback_composition.get("primary_answer"))
+            print("[FALLBACK COMPOSER] Confidence:", fallback_composition.get("confidence"))
 
-            print(
-                "[FALLBACK COMPOSER] Primary:",
-                fallback_composition.get(
-                    "primary_answer",
-                ),
-            )
-
-            print(
-                "[FALLBACK COMPOSER] Confidence:",
-                fallback_composition.get(
-                    "confidence",
-                ),
-            )
-
-            if _can_use_fast_path(
-                fallback_composition,
-                fallback_rendered,
-            ):
+            if _can_use_fast_path(message, fallback_composition, fallback_rendered):
                 deterministic_used = True
-
-                reply = str(
-                    fallback_rendered.get(
-                        "reply",
-                        "",
-                    )
-                )
-
-                total_time = (
-                    time.perf_counter()
-                    - total_start
-                )
-
+                reply = str(fallback_rendered.get("reply", ""))
+                total_time = time.perf_counter() - total_start
                 _print_performance(
-                    retrieval_time=(
-                        retrieval_time
-                    ),
-                    reranker_time=(
-                        reranker_time
-                    ),
-                    composer_time=(
-                        composer_time
-                    ),
-                    fallback_time=(
-                        fallback_time
-                    ),
+                    retrieval_time=retrieval_time,
+                    reranker_time=reranker_time,
+                    composer_time=composer_time,
+                    fallback_time=fallback_time,
                     prompt_time=0.0,
                     ollama_time=0.0,
                     guard_time=0.0,
@@ -2012,428 +1055,196 @@ def generate_reply(
                     total_time=total_time,
                 )
 
-                source_results = (
-                    fallback_prompt_results
-                )
-
-                if (
-                    str(
-                        fallback_composition.get(
-                            "answer_type",
-                            "",
-                        )
-                    )
-                    == "STANDART / DOKÜMAN"
-                ):
-                    source_results = (
-                        _select_document_source_results(
-                            fallback_composer_results,
-                            str(
-                                fallback_composition.get(
-                                    "primary_answer",
-                                    "",
-                                )
-                            ),
-                            question=message,
-                        )
+                source_results = fallback_prompt_results
+                if str(fallback_composition.get("answer_type", "")) == "STANDART / DOKÜMAN":
+                    source_results = _select_document_source_results(
+                        fallback_composer_results,
+                        str(fallback_composition.get("primary_answer", "")),
+                        question=message,
                     )
 
                 return {
                     "reply": reply,
-                    "sources": (
-                        _build_sources(
-                            source_results
-                        )
-                    ),
-                    "blocked_sources": (
-                        _build_blocked_sources(
-                            blocked_results
-                        )
-                    ),
+                    "sources": _build_sources(source_results),
+                    "blocked_sources": _build_blocked_sources(blocked_results),
                 }
 
-    # -----------------------------------------------------
-    # LLM EVIDENCE SELECTION
-    # -----------------------------------------------------
-    #
-    # Targeted fallback daha iyi bir evidence seti üretmiş
-    # ama deterministic confidence yeterli olmamışsa,
-    # Ollama'nın da bu daha güçlü evidence'ı görmesine
-    # izin ver.
-    # -----------------------------------------------------
-
-    llm_results = (
-        prompt_results
+    llm_results = prompt_results
+    fallback_confidence = str(fallback_composition.get("confidence", "low"))
+    precision_route = (
+        _is_reference_point_question(message)
+        or bool(_precision_fallback_phrases(message))
+        or _is_document_question(message)
     )
 
-    if (
+    fallback_scores_usable = _fallback_scores_are_usable(fallback_prompt_results)
+    fallback_outperforms_normal = _fallback_outperforms_normal_evidence(
+        fallback_prompt_results,
+        prompt_results,
+        question=message,
+    )
+
+    if fallback_prompt_results and fallback_scores_usable and not fallback_outperforms_normal:
+        print("[EVIDENCE] Normal evidence daha güçlü; fallback kullanılmayacak.")
+
+    precision_fallback_has_evidence = bool(fallback_prompt_results) and precision_route and fallback_scores_usable
+
+    is_nf_intent = any(
+        re.search(r"\b" + nf + r"\b", message, flags=re.IGNORECASE)
+        for nf in ["amf", "smf", "upf", "ausf", "udm", "pcf", "nssf", "nrf"]
+    )
+
+    should_use_fallback = (
         fallback_prompt_results
-        and str(
-            fallback_composition.get(
-                "confidence",
-                "low",
-            )
+        and fallback_scores_usable
+        and (
+            fallback_outperforms_normal
+            or is_nf_intent
+            or (fallback_confidence in {"medium", "high"})
+            or precision_fallback_has_evidence
         )
-        in {
-            "medium",
-            "high",
-        }
-    ):
-        if (
-            str(
-                fallback_composition.get(
-                    "answer_type",
-                    "",
-                )
-            )
-            == "STANDART / DOKÜMAN"
-        ):
-            llm_results = (
-                _select_document_source_results(
-                    fallback_composer_results,
-                    str(
-                        fallback_composition.get(
-                            "primary_answer",
-                            "",
-                        )
-                    ),
-                    question=message,
-                    limit=PROMPT_TOP_K,
-                )
-            )
+    )
 
+    if should_use_fallback:
+        if str(fallback_composition.get("answer_type", "")) == "STANDART / DOKÜMAN":
+            llm_results = _select_document_source_results(
+                fallback_composer_results,
+                str(fallback_composition.get("primary_answer", "")),
+                question=message,
+                limit=PROMPT_TOP_K,
+            )
         else:
-            llm_results = (
-                fallback_prompt_results[
-                    :PROMPT_TOP_K
-                ]
-            )
+            llm_results = _select_prompt_results(message, fallback_prompt_results)
 
-    # -----------------------------------------------------
-    # PROMPT
-    # -----------------------------------------------------
-
-    prompt_start = (
-        time.perf_counter()
+    precision_route_failed = fallback_required and precision_route and (
+        not fallback_prompt_results or not fallback_scores_usable
     )
 
-    user_prompt = (
-        build_user_prompt(
-            question=message,
-            chunks=llm_results,
+    evidence_usable = has_usable_evidence(message, llm_results)
+
+    if precision_route_failed or not evidence_usable:
+        print(
+            "[EVIDENCE GATE] Cevap üretimi durduruldu:",
+            "precision fallback kanıt bulamadı" if precision_route_failed else "kanıt yetersiz veya düşük değerli",
         )
-    )
-
-    prompt_time = (
-        time.perf_counter()
-        - prompt_start
-    )
-
-    print(
-        "[PIPELINE] Ollama prompt chunk:",
-        len(llm_results),
-    )
-
-    print(
-        "[PIPELINE] User prompt karakter:",
-        len(user_prompt),
-    )
-
-    # -----------------------------------------------------
-    # OLLAMA
-    # -----------------------------------------------------
-
-    ollama_start = (
-        time.perf_counter()
-    )
-
-    try:
-        reply = (
-            generate_with_ollama(
-                system_prompt=(
-                    SYSTEM_PROMPT
-                ),
-                user_prompt=(
-                    user_prompt
-                ),
-            )
-        )
-
-        ollama_time += (
-            time.perf_counter()
-            - ollama_start
-        )
-
-    except OllamaServiceError as error:
-        ollama_time += (
-            time.perf_counter()
-            - ollama_start
-        )
-
-        total_time = (
-            time.perf_counter()
-            - total_start
-        )
-
+        total_time = time.perf_counter() - total_start
         _print_performance(
-            retrieval_time=(
-                retrieval_time
-            ),
-            reranker_time=(
-                reranker_time
-            ),
-            composer_time=(
-                composer_time
-            ),
-            fallback_time=(
-                fallback_time
-            ),
-            prompt_time=(
-                prompt_time
-            ),
-            ollama_time=(
-                ollama_time
-            ),
+            retrieval_time=retrieval_time,
+            reranker_time=reranker_time,
+            composer_time=composer_time,
+            fallback_time=fallback_time,
+            prompt_time=0.0,
+            ollama_time=0.0,
             guard_time=0.0,
             repair_used=False,
             deterministic_used=False,
             total_time=total_time,
         )
-
         return {
-            "reply": (
-                f"Yanıt üretilemedi: "
-                f"{error}"
-            ),
+            "reply": "Bu soruyu yanıtlamak için yeterli standart bilgisi bulunamadı.",
             "sources": [],
-            "blocked_sources": (
-                _build_blocked_sources(
-                    blocked_results
-                )
-            ),
+            "blocked_sources": _build_blocked_sources(blocked_results),
         }
 
-    # -----------------------------------------------------
-    # ANSWER GUARD
-    # -----------------------------------------------------
+    prompt_start = time.perf_counter()
+    user_prompt = build_user_prompt(question=message, chunks=llm_results)
+    prompt_time = time.perf_counter() - prompt_start
 
-    guard_start = (
-        time.perf_counter()
-    )
+    print("[PIPELINE] Ollama prompt chunk:", len(llm_results))
+    print("[PIPELINE] User prompt karakter:", len(user_prompt))
 
-    validation = (
-        validate_answer(
-            question=message,
-            reply=reply,
-            chunks=llm_results,
+    ollama_start = time.perf_counter()
+    try:
+        reply = generate_with_ollama(
+            system_prompt=SYSTEM_PROMPT,
+            user_prompt=user_prompt,
         )
-    )
-
-    guard_time += (
-        time.perf_counter()
-        - guard_start
-    )
-
-    print(
-        "[ANSWER GUARD] İlk cevap:",
-        (
-            "PASS"
-            if validation[
-                "valid"
-            ]
-            else "FAIL"
-        ),
-    )
-
-    if not validation[
-        "valid"
-    ]:
-        print(
-            "[ANSWER GUARD] Sebep:",
-            validation.get(
-                "reason",
-                "",
-            ),
+        ollama_time += time.perf_counter() - ollama_start
+    except OllamaServiceError as error:
+        ollama_time += time.perf_counter() - ollama_start
+        total_time = time.perf_counter() - total_start
+        _print_performance(
+            retrieval_time=retrieval_time,
+            reranker_time=reranker_time,
+            composer_time=composer_time,
+            fallback_time=fallback_time,
+            prompt_time=prompt_time,
+            ollama_time=ollama_time,
+            guard_time=0.0,
+            repair_used=False,
+            deterministic_used=False,
+            total_time=total_time,
         )
+        return {
+            "reply": f"Yanıt üretilemedi: {error}",
+            "sources": [],
+            "blocked_sources": _build_blocked_sources(blocked_results),
+        }
 
-        print(
-            "[ANSWER GUARD] Beklenen tür:",
-            validation.get(
-                "answer_type",
-                "",
-            ),
-        )
+    guard_start = time.perf_counter()
+    reply = re.sub(r"\b([A-Z][A-Za-z0-9/.-]{1,})\s*\(([^)]+)\)", r"\1", reply)
+    validation = validate_answer(question=message, reply=reply, chunks=llm_results)
+    guard_time += time.perf_counter() - guard_start
 
-        print(
-            "[ANSWER GUARD] Evidence:",
-            validation.get(
-                "evidence_terms",
-                [],
-            ),
-        )
+    print("[ANSWER GUARD] İlk cevap:", "PASS" if validation["valid"] else "FAIL")
+
+    if not validation["valid"]:
+        print("[ANSWER GUARD] Sebep:", validation.get("reason", ""))
+        print("[ANSWER GUARD] Beklenen tür:", validation.get("answer_type", ""))
+        print("[ANSWER GUARD] Evidence:", validation.get("evidence_terms", []))
 
         repair_used = True
-
-        # -------------------------------------------------
-        # SINGLE REPAIR
-        # -------------------------------------------------
-
-        repair_prompt = (
-            build_repair_prompt(
-                question=message,
-                bad_reply=reply,
-                chunks=llm_results,
-                validation=validation,
-            )
+        repair_prompt = build_repair_prompt(
+            question=message,
+            bad_reply=reply,
+            chunks=llm_results,
+            validation=validation,
         )
 
-        repair_start = (
-            time.perf_counter()
-        )
-
+        repair_start = time.perf_counter()
         try:
-            repaired_reply = (
-                generate_with_ollama(
-                    system_prompt=(
-                        SYSTEM_PROMPT
-                    ),
-                    user_prompt=(
-                        repair_prompt
-                    ),
-                )
+            repaired_reply = generate_with_ollama(
+                system_prompt=SYSTEM_PROMPT,
+                user_prompt=repair_prompt,
             )
-
-            ollama_time += (
-                time.perf_counter()
-                - repair_start
-            )
-
+            ollama_time += time.perf_counter() - repair_start
         except OllamaServiceError:
-            ollama_time += (
-                time.perf_counter()
-                - repair_start
-            )
-
+            ollama_time += time.perf_counter() - repair_start
             repaired_reply = ""
 
-        # -------------------------------------------------
-        # SECOND VALIDATION
-        # -------------------------------------------------
-
         if repaired_reply:
-            second_guard_start = (
-                time.perf_counter()
+            second_guard_start = time.perf_counter()
+            second_validation = validate_answer(
+                question=message,
+                reply=repaired_reply,
+                chunks=llm_results,
             )
+            guard_time += time.perf_counter() - second_guard_start
+            print("[ANSWER GUARD] Repair cevap:", "PASS" if second_validation["valid"] else "FAIL")
 
-            second_validation = (
-                validate_answer(
-                    question=message,
-                    reply=repaired_reply,
-                    chunks=llm_results,
-                )
-            )
-
-            guard_time += (
-                time.perf_counter()
-                - second_guard_start
-            )
-
-            print(
-                "[ANSWER GUARD] Repair cevap:",
-                (
-                    "PASS"
-                    if second_validation[
-                        "valid"
-                    ]
-                    else "FAIL"
-                ),
-            )
-
-            if second_validation[
-                "valid"
-            ]:
-                reply = (
-                    repaired_reply
-                )
-
+            if second_validation["valid"]:
+                reply = repaired_reply
             else:
-                print(
-                    "[ANSWER GUARD] Repair sebep:",
-                    second_validation.get(
-                        "reason",
-                        "",
-                    ),
-                )
-
-                reply = (
-                    build_guard_fallback(
-                        second_validation
-                    )
-                )
-
+                print("[ANSWER GUARD] Repair sebep:", second_validation.get("reason", ""))
+                reply = build_guard_fallback(second_validation)
         else:
-            reply = (
-                build_guard_fallback(
-                    validation
-                )
-            )
+            reply = build_guard_fallback(validation)
 
-    # -----------------------------------------------------
-    # SOURCES
-    # -----------------------------------------------------
+    sources = _build_sources(llm_results)
+    blocked_sources = _build_blocked_sources(blocked_results)
 
-    sources = (
-        _build_sources(
-            llm_results
-        )
-    )
-
-    blocked_sources = (
-        _build_blocked_sources(
-            blocked_results
-        )
-    )
-
-    # -----------------------------------------------------
-    # TOTAL
-    # -----------------------------------------------------
-
-    total_time = (
-        time.perf_counter()
-        - total_start
-    )
-
+    total_time = time.perf_counter() - total_start
     _print_performance(
-        retrieval_time=(
-            retrieval_time
-        ),
-        reranker_time=(
-            reranker_time
-        ),
-        composer_time=(
-            composer_time
-        ),
-        fallback_time=(
-            fallback_time
-        ),
-        prompt_time=(
-            prompt_time
-        ),
-        ollama_time=(
-            ollama_time
-        ),
-        guard_time=(
-            guard_time
-        ),
-        repair_used=(
-            repair_used
-        ),
-        deterministic_used=(
-            deterministic_used
-        ),
-        total_time=(
-            total_time
-        ),
+        retrieval_time=retrieval_time,
+        reranker_time=reranker_time,
+        composer_time=composer_time,
+        fallback_time=fallback_time,
+        prompt_time=prompt_time,
+        ollama_time=ollama_time,
+        guard_time=guard_time,
+        repair_used=repair_used,
+        deterministic_used=deterministic_used,
+        total_time=total_time,
     )
 
     return {
