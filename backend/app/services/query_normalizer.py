@@ -18,6 +18,40 @@ HIGH_PRECISION_RULES: list[
 ] = [
 
     # -----------------------------------------------------
+    # WEBSOCKET RFC / SPECIFICATION
+    # -----------------------------------------------------
+
+    (
+        (
+            r"\bwebsocket\b.*\b(?:rfc|standart|standard|doküman|dokuman|şartname)\w*",
+            r"\bwebsocket\b.*\btanımlan\w*",
+            r"\bhangi(?:\s+\w+){0,3}\s+(?:rfc|doküman)\w*.*\bwebsocket\b",
+        ),
+        (
+            "The WebSocket Protocol",
+            "WebSocket RFC specification",
+            "WebSocket protocol overview",
+        ),
+    ),
+
+    # -----------------------------------------------------
+    # NAS MESSAGE: PDU SESSION ESTABLISHMENT
+    # -----------------------------------------------------
+
+    (
+        (
+            r"\bpdu\s+session\b.*\bbaşlat\w*.*\bmesaj",
+            r"\bpdu\s+session\b.*\bestablish\w*.*\bmesaj",
+            r"\bpdu\s+session\b.*\bhangi\s+nas\s+mesaj",
+        ),
+        (
+            "PDU SESSION ESTABLISHMENT REQUEST",
+            "UE-requested PDU session establishment procedure",
+            "PDU session establishment NAS message",
+        ),
+    ),
+
+    # -----------------------------------------------------
     # AMF <-> SMF REFERENCE POINT
     # -----------------------------------------------------
 
@@ -129,8 +163,8 @@ HIGH_PRECISION_RULES: list[
 
     (
         (
-            r"\b5g(?:s|\s+system)?\b.*\barchitecture\b.*\b(?:standart|standard)\w*",
-            r"\b5g(?:s|\s+system)?\b.*\bmimari\w*.*\b(?:standart|standard)\w*",
+            r"\b5g(?:s|\s+system)?\b.*\barchitecture\b.*\b(?:standart|standard|şartname|sartname|doküman)\w*",
+            r"\b5g(?:s|\s+system)?\b.*\bmimari\w*.*\b(?:standart|standard|şartname|sartname|doküman)\w*",
         ),
         (
             "System Architecture for the 5G System Stage 2",

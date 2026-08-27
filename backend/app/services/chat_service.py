@@ -47,8 +47,8 @@ from app.services.reranker_service import Reranker
 # PIPELINE AYARLARI
 # =========================================================
 
-RETRIEVAL_TOP_K = 3
-PROMPT_TOP_K = 2
+RETRIEVAL_TOP_K = 12
+PROMPT_TOP_K = 3
 STRONG_RERANK_SCORE = 7.0
 STRONG_RERANK_MARGIN = 2.0
 
@@ -242,6 +242,10 @@ def _can_use_fast_path(
     renderer_success = bool(rendered.get("success", False))
     reply = str(rendered.get("reply", "") or "").strip()
 
+    # Eğer standart/doküman veya referans noktası gibi yüksek güvenli bir tespit varsa doğrudan izin ver
+    if confidence == "high" and renderer_success and bool(reply):
+        return True
+
     return (
         answer_type in FAST_PATH_TYPES
         and allows_deterministic_fast_path(question, answer_type)
@@ -315,6 +319,10 @@ def _precision_fallback_phrases(
     if cell_broadcast_intent and cancellation_intent:
         return ["The cancel warning message delivery procedure takes place"]
 
+    if "5g" in normalized_question and any(val in normalized_question for val in ("mimarisi", "architecture", "sistem mimarisi")):
+        if any(val in normalized_question for val in ("şartname", "sartname", "standart", "standard", "doküman", "document")):
+            return ["System Architecture for the 5G System", "3GPP TS 23.501"]
+
     return []
 
 
@@ -336,44 +344,50 @@ def _reference_point_fts_queries(
 
     if explicit_reference_point:
         reference_point = explicit_reference_point.group(1).upper()
-        signalling_question = re.search(
-            r"\b(?:sinyalleş\w*|signall?ing)\b",
-            question or "",
-            flags=re.IGNORECASE,
-        )
-
-        if signalling_question:
-            tokens = re.findall(r"\b(?:NG-RAN|[A-Z]{2,}(?:-[A-Z0-9]+)*)\b", question or "")
-            excluded = {"5G", "5GS", "TS", "TR", "RFC", "NAS", "REFERENCE", "POINT", "INTERFACE"}
-            endpoints = [t for t in tokens if t not in excluded]
-
-            strict_terms = [reference_point, "NAS", *endpoints[:2]]
-            strict_query = " AND ".join(f'"{term}"' for term in strict_terms)
-
-            return [
-                strict_query,
-                f'"{reference_point}" AND "NAS"',
-                f'"{reference_point}" AND "signalling"',
-            ]
-
         return [f'"{reference_point}" AND "reference point"']
 
-    tokens = re.findall(r"\b(?:NG-RAN|[A-Z]{2,}(?:-[A-Z0-9]+)*)\b", question or "")
-    excluded = {"5G", "5GS", "TS", "TR", "RFC", "REFERENCE", "POINT", "INTERFACE"}
-    endpoints = [t for t in tokens if t not in excluded]
+    stop_tokens = {
+        "5G", "5GS", "TS", "TR", "RFC", "REFERENCE", "POINT", "INTERFACE", 
+        "HTTP", "IETF", "ILE", "ARASINDAKI", "ARASINDA", "HANGISIDIR", 
+        "NEDIR", "HANGI", "BETWEEN", "AND", "THE"
+    }
 
-    if len(endpoints) < 2:
+    raw_tokens = re.findall(r"\b(?:NG-RAN|gNB|gNodeB|eNB|[A-Za-z0-9/\-]{2,})\b", question or "")
+    
+    normalized_endpoints: list[str] = []
+    for token in raw_tokens:
+        clean = token.upper()
+        if clean in stop_tokens:
+            continue
+        if clean in {"GNB", "GNODEB", "ENB", "NG-RAN", "(R)AN"}:
+            clean = "RAN"
+        if clean not in normalized_endpoints:
+            normalized_endpoints.append(clean)
+
+    if len(normalized_endpoints) < 2:
         return []
 
-    first, second = endpoints[0], endpoints[1]
+    first, second = normalized_endpoints[0], normalized_endpoints[1]
 
-    if first in {"NG-RAN", "RAN"}:
-        return [f'"reference point between" AND "{second}"']
+    queries = []
+    # RAN ile ilgili ise 3GPP'nin yaygın "(R)AN", "NG-RAN" ve "TS 23.501" biçimlerini ekle
+    if "RAN" in (first, second):
+        other = second if first == "RAN" else first
+        queries.extend([
+            f'"Reference point between" AND "{other}"',
+            f'"Reference points" AND "{other}"',
+            f'"(R)AN" AND "{other}"',
+            f'"NG-RAN" AND "{other}"',
+            f'"N2" AND "{other}"',
+        ])
+    else:
+        queries.extend([
+            f'"reference point between" AND "{first}" AND "{second}"',
+            f'"reference point" AND "{first}" AND "{second}"',
+            f'"{first}" AND "{second}" AND "reference point"',
+        ])
 
-    if second in {"NG-RAN", "RAN"}:
-        return [f'"reference point between" AND "{first}"']
-
-    return [f'"reference point" AND "{first}" AND "{second}"']
+    return queries
 
 
 def _is_document_question(
@@ -387,10 +401,19 @@ def _needs_targeted_fallback(
     composition: dict[str, Any],
     rendered: dict[str, Any],
 ) -> bool:
+    answer_type = str(composition.get("answer_type", ""))
+    confidence = str(composition.get("confidence", "low"))
+    primary_answer = str(composition.get("primary_answer", "") or "").strip()
+    renderer_success = bool(rendered.get("success", False))
+
+    # Eğer standart/doküman sorusunda ilk aşamada zaten yüksek güvenle bir doküman bulunduysa fallback yapma
+    if _is_document_question(question) and confidence == "high" and primary_answer and renderer_success:
+        return False
+
     if _is_reference_point_question(question):
         return True
 
-    # Genel NF (Ağ Fonksiyonları) mimari sorularında lexical fallback'i zorunlu kıl
+    # Genel NF (Ağ Fonksiyonları) mimari sorularında fallback kontrolü
     if any(
         re.search(r"\b" + nf + r"\b", question, flags=re.IGNORECASE)
         for nf in ["amf", "smf", "upf", "ausf", "udm", "pcf", "nssf", "nrf"]
@@ -404,11 +427,6 @@ def _needs_targeted_fallback(
     if _is_document_question(question):
         return True
 
-    answer_type = str(composition.get("answer_type", ""))
-    confidence = str(composition.get("confidence", "low"))
-    primary_answer = str(composition.get("primary_answer", "") or "").strip()
-    renderer_success = bool(rendered.get("success", False))
-
     if answer_type == "DEĞER / LİMİT" and primary_answer and _value_answer_echoes_question(
         question=question,
         primary_answer=primary_answer,
@@ -420,7 +438,6 @@ def _needs_targeted_fallback(
 
     return False
 
-
 # =========================================================
 # TARGETED SECOND-PASS RETRIEVAL
 # =========================================================
@@ -431,8 +448,9 @@ def _document_fallback_candidates(
     search_queries = retriever.query_normalizer.normalize(question, max_variants=4)
     phrase_queries = search_queries[1:] if len(search_queries) > 1 else search_queries
 
-    if not phrase_queries:
-        return []
+    precision_phrases = _precision_fallback_phrases(question)
+    if precision_phrases:
+        phrase_queries = precision_phrases + phrase_queries
 
     print("[FALLBACK] Document discovery sorguları:", phrase_queries)
 
@@ -440,12 +458,20 @@ def _document_fallback_candidates(
     seen_chunk_ids: set[str] = set()
 
     for phrase in phrase_queries:
-        words = [w for w in re.findall(r"[A-Za-z0-9]+", phrase) if len(w) > 2]
+        words = [w for w in re.findall(r"[A-Za-z0-9/]+", phrase) if len(w) > 1]
         if not words:
             continue
-        flexible_query = " AND ".join(f'"{w}"' for w in words[:3])
         
-        results = lexical_search.search_query(query=flexible_query, limit=10)
+        # 'this', 'document', 'defines' gibi generic kelimeleri temizleyip teknik kelimeleri FTS5'e zorunlu yap
+        clean_words = [w for w in words if w.casefold() not in {"this", "the", "document", "defines", "specifies", "protocol", "overview"}]
+        
+        if clean_words:
+            # Örneğin: "HTTP" AND "3" AND "RFC"
+            flexible_query = " AND ".join(f'"{w}"' for w in clean_words)
+        else:
+            flexible_query = " AND ".join(f'"{w}"' for w in words[:4])
+        
+        results = lexical_search.search_query(query=flexible_query, limit=15)
         print(f"[FALLBACK] Document hit '{flexible_query}': {len(results)}")
 
         for result in results:
@@ -458,7 +484,6 @@ def _document_fallback_candidates(
 
     print("[FALLBACK] Document toplam unique aday:", len(candidates))
     return candidates[:DOCUMENT_FALLBACK_COMPOSER_TOP_K]
-
 
 def _parse_primary_document_identity(
     primary_answer: str,
@@ -621,77 +646,79 @@ def _select_document_source_results(
 def _targeted_fallback_retrieval(
     question: str,
 ) -> list[dict[str, Any]]:
-    reference_queries = _reference_point_fts_queries(question)
-    technical_variants = retriever.query_normalizer.normalize(question, max_variants=4)[1:]
+    # 1. Yalnızca gerçek referans noktası sorularında reference point FTS yap
+    if _is_reference_point_question(question):
+        reference_queries = _reference_point_fts_queries(question)
+        technical_variants = retriever.query_normalizer.normalize(question, max_variants=4)[1:]
 
-    for reference_query in reference_queries:
-        print("[FALLBACK] Reference-point FTS:", reference_query)
-        reference_results = lexical_search.search_query(query=reference_query, limit=20)
+        for reference_query in reference_queries:
+            print("[FALLBACK] Reference-point FTS:", reference_query)
+            reference_results = lexical_search.search_query(query=reference_query, limit=20)
 
-        if not reference_results:
-            continue
+            if not reference_results:
+                continue
 
-        reference_results = _prefer_content_results(
-            question,
-            _deduplicate_results(reference_results),
-        )
-
-        constraint = extract_document_constraint(question)
-        if constraint:
-            reference_results = [
-                result
-                for result in reference_results
-                if result_matches_document_constraint(result, constraint)
-            ]
-
-        if not reference_results:
-            continue
-
-        enriched_reference_results: list[dict[str, Any]] = []
-        for result in reference_results:
-            enriched = dict(result)
-            matched_queries = list(enriched.get("matched_queries", []))
-            for variant in technical_variants:
-                if variant not in matched_queries:
-                    matched_queries.append(variant)
-            enriched["matched_queries"] = matched_queries
-            enriched_reference_results.append(enriched)
-
-        reference_results = enriched_reference_results
-        print("[FALLBACK] Reference-point aday:", len(reference_results))
-
-        try:
-            ranked_reference_results = reranker.rerank(
-                query=question,
-                candidates=reference_results,
-                top_k=min(FALLBACK_COMPOSER_TOP_K, len(reference_results)),
+            reference_results = _prefer_content_results(
+                question,
+                _deduplicate_results(reference_results),
             )
 
-            for index, result in enumerate(ranked_reference_results, start=1):
-                metadata = result.get("metadata", {})
-                print(
-                    f"[FALLBACK RERANK] {index}. "
-                    f"{metadata.get('org', 'Bilinmiyor')} "
-                    f"{metadata.get('code', 'Bilinmiyor')} | "
-                    f"Madde {metadata.get('clause', 'Bilinmiyor')} | "
-                    f"Skor: {float(result.get('rerank_score', 0.0)):.4f}"
+            constraint = extract_document_constraint(question)
+            if constraint:
+                reference_results = [
+                    result
+                    for result in reference_results
+                    if result_matches_document_constraint(result, constraint)
+                ]
+
+            if not reference_results:
+                continue
+
+            enriched_reference_results: list[dict[str, Any]] = []
+            for result in reference_results:
+                enriched = dict(result)
+                matched_queries = list(enriched.get("matched_queries", []))
+                for variant in technical_variants:
+                    if variant not in matched_queries:
+                        matched_queries.append(variant)
+                enriched["matched_queries"] = matched_queries
+                enriched_reference_results.append(enriched)
+
+            reference_results = enriched_reference_results
+            print("[FALLBACK] Reference-point aday:", len(reference_results))
+
+            try:
+                ranked_reference_results = reranker.rerank(
+                    query=question,
+                    candidates=reference_results,
+                    top_k=min(FALLBACK_COMPOSER_TOP_K, len(reference_results)),
                 )
 
-            return ranked_reference_results
-        except Exception as error:
-            print("[FALLBACK] Reference-point rerank failed:", error)
-            return reference_results[:FALLBACK_COMPOSER_TOP_K]
+                for index, result in enumerate(ranked_reference_results, start=1):
+                    metadata = result.get("metadata", {})
+                    print(
+                        f"[FALLBACK RERANK] {index}. "
+                        f"{metadata.get('org', 'Bilinmiyor')} "
+                        f"{metadata.get('code', 'Bilinmiyor')} | "
+                        f"Madde {metadata.get('clause', 'Bilinmiyor')} | "
+                        f"Skor: {float(result.get('rerank_score', 0.0)):.4f}"
+                    )
 
-    precision_phrases = _precision_fallback_phrases(question)
+                return ranked_reference_results
+            except Exception as error:
+                print("[FALLBACK] Reference-point rerank failed:", error)
+                return reference_results[:FALLBACK_COMPOSER_TOP_K]
 
-    if precision_phrases:
-        phrase_queries = precision_phrases
-        print("[FALLBACK] Precision lexical route:", phrase_queries)
-    elif _is_document_question(question):
+    # 2. Doküman sorusuysa doğrudan doküman fallback'ine git
+    if _is_document_question(question):
         return _document_fallback_candidates(question)
-    else:
-        search_queries = retriever.query_normalizer.normalize(question, max_variants=4)
-        phrase_queries = search_queries[1:] if len(search_queries) > 1 else []
+
+    # 3. Precision fallback veya normal teknik varyantlar
+    precision_phrases = _precision_fallback_phrases(question)
+    search_queries = retriever.query_normalizer.normalize(question, max_variants=4)
+    technical_variants = search_queries[1:] if len(search_queries) > 1 else []
+    
+    phrase_queries = precision_phrases if precision_phrases else technical_variants
 
     if not phrase_queries:
         return []
@@ -742,10 +769,8 @@ def _targeted_fallback_retrieval(
         return []
 
     try:
-        # CrossEncoder'ın doğru skor üretmesi için teknik varyantı kullan
         rerank_query = technical_variants[0] if technical_variants else question
 
-        # Lexical sonuçlara matched_queries ekle
         enriched_candidates = []
         for candidate in candidates:
             enriched = dict(candidate)
@@ -944,6 +969,7 @@ def generate_reply(
             "blocked_sources": _build_blocked_sources(blocked_results),
         }
 
+    # Bütün available adayları CrossEncoder'a veriyoruz (kesilme olmasın)
     reranker_start = time.perf_counter()
     if len(available_results) == 1:
         reranked_results = available_results
@@ -951,7 +977,7 @@ def generate_reply(
         reranked_results = reranker.rerank(
             query=message,
             candidates=available_results,
-            top_k=PROMPT_TOP_K,
+            top_k=len(available_results),
         )
     reranker_time = time.perf_counter() - reranker_start
 
@@ -970,7 +996,7 @@ def generate_reply(
         )
 
     composer_start = time.perf_counter()
-    composition, rendered = _compose_and_render(question=message, chunks=prompt_results)
+    composition, rendered = _compose_and_render(question=message, chunks=reranked_results[:DOCUMENT_FALLBACK_COMPOSER_TOP_K])
     composer_time += time.perf_counter() - composer_start
 
     print("[COMPOSER] Answer type:", composition.get("answer_type"))
@@ -1003,15 +1029,25 @@ def generate_reply(
             deterministic_used=True,
             total_time=total_time,
         )
+
+        source_results = prompt_results
+        if str(composition.get("answer_type", "")) == "STANDART / DOKÜMAN":
+            source_results = _select_document_source_results(
+                reranked_results,
+                str(composition.get("primary_answer", "")),
+                question=message,
+            )
+
         return {
             "reply": reply,
-            "sources": _build_sources(prompt_results),
+            "sources": _build_sources(source_results),
             "blocked_sources": _build_blocked_sources(blocked_results),
         }
 
     fallback_prompt_results: list[dict[str, Any]] = []
     fallback_composition: dict[str, Any] = {}
     fallback_rendered: dict[str, Any] = {}
+    fallback_composer_results: list[dict[str, Any]] = []
 
     if fallback_required:
         print("[FALLBACK] Targeted second-pass retrieval başlıyor.")
@@ -1019,11 +1055,13 @@ def generate_reply(
         fallback_results = _targeted_fallback_retrieval(message)
         fallback_time += time.perf_counter() - fallback_start
 
-        fallback_prompt_results = fallback_results[:FALLBACK_COMPOSER_TOP_K]
-        fallback_composer_results = fallback_prompt_results
-
         if str(composition.get("answer_type", "")) == "STANDART / DOKÜMAN":
-            fallback_composer_results = fallback_results[:DOCUMENT_FALLBACK_COMPOSER_TOP_K]
+            combined_candidates = _deduplicate_results(fallback_results + reranked_results)
+            fallback_composer_results = combined_candidates[:DOCUMENT_FALLBACK_COMPOSER_TOP_K]
+            fallback_prompt_results = fallback_composer_results[:FALLBACK_COMPOSER_TOP_K]
+        else:
+            fallback_prompt_results = fallback_results[:FALLBACK_COMPOSER_TOP_K]
+            fallback_composer_results = fallback_prompt_results
 
         print("[FALLBACK] Composer evidence chunk:", len(fallback_composer_results))
 

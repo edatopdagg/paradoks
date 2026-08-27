@@ -51,15 +51,6 @@ def infer_answer_type(
     """
     Kullanıcının hangi tür teknik varlığı
     sorduğunu deterministik olarak belirler.
-
-    Önemli:
-    Daha spesifik türler daha genel türlerden
-    ÖNCE kontrol edilir.
-
-    Örneğin:
-        "hangi network function"
-    ifadesi "hangi network" nedeniyle SİSTEM
-    olarak sınıflandırılmamalıdır.
     """
 
     clean_question = (
@@ -75,18 +66,11 @@ def infer_answer_type(
 
         (
             (
-                r"\bhangi\s+standart\w*",
-                r"\bhangi\s+doküman\w*",
-                r"\bhangi\s+rfc\w*",
-                r"\bhangi\s+(?:3gpp\s+)?(?:standart|standard)\w*",
-                r"\b(?:standart|standard)\w*\s+tanımlan\w*",
-                r"\bhangi\s+rfc\b",
+                r"\bhangi(?:\s+\w+){0,3}\s+(?:standart|standard|doküman|dokuman|rfc|belge|şartname|sartname|spec|specification)\w*",
+                r"\bhangi\s+(?:ietf\s+|3gpp\s+|etsi\s+)?(?:standart|standard|doküman|dokuman|rfc|belge|şartname|sartname|spec|specification)\w*",
+                r"\b(?:standart|standard|doküman|dokuman|rfc|şartname|spec)\w*\s+tanımlan\w*",
                 r"\brfc['’]?(?:de|da)\s+tanımlan\w*",
-                r"\bhangi\s+(?:doküman|document)\w*",
-                r"\brfc(?:'|’)?(?:de|da)\b",
-                r"\bhangi\s+specification\b",
-                r"\bwhich\s+rfc\b",
-                r"\bwhich\s+standard\b",
+                r"\bwhich(?:\s+\w+){0,3}\s+(?:rfc|standard|document|specification)\b",
             ),
             "STANDART / DOKÜMAN",
         ),
@@ -97,11 +81,11 @@ def infer_answer_type(
 
         (
             (
-                r"\bhangi(?:\s+\w+){0,3}\s+arayüz\w*",
-                r"\bhangi(?:\s+\w+){0,3}\s+interface\w*",
-                r"\bhangi(?:\s+\w+){0,3}\s+referans\s+nokt\w*",
-                r"\b\w+\s+ile\s+\w+\s+arasındaki\s+"
-                r"referans\s+nokt\w*\s+hangisidir\b",
+                r"\bhangi(?:\s+\w+){0,4}\s+arayüz\w*",
+                r"\bhangi(?:\s+\w+){0,4}\s+interface\w*",
+                r"\bhangi(?:\s+\w+){0,4}\s+referans\s+nokt\w*",
+                r"\breferans\s+nokt\w*[^?]{0,60}\b(?:hangisi\w*|nedir|adı\s+ne)\b",
+                r"\b\w+\s+ile\s+\w+\s+arasındaki\s+referans\s+nokt\w*",
                 r"\bwhich(?:\s+\w+){0,3}\s+reference\s+point\b",
             ),
             "ARAYÜZ / REFERANS NOKTASI",
@@ -128,11 +112,11 @@ def infer_answer_type(
 
         (
             (
-                r"\bhangi(?:\s+\w+){0,3}\s+network\s+function\b",
+                r"\bhangi(?:\s+\w+){0,4}\s+(?:ağ\s+fonksiyonu|network\s+function|nf)\b",
                 r"\bhangi\s+nf\b",
-                r"\bwhich(?:\s+\w+){0,3}\s+network\s+function\b",
-                r"\bnetwork\s+function\s+(?:yürüt|gerçekleştir|yapar)",
-                r"\bnetwork\s+function\b",
+                r"\bwhich(?:\s+\w+){0,4}\s+network\s+function\b",
+                r"\b(?:sorumlu|yürüten|sağlayan|gerçekleştiren)\s+(?:ağ\s+fonksiyonu|network\s+function|nf)\b",
+                r"\b(?:ağ\s+fonksiyonu|network\s+function|nf)\s+(?:sorumlu|yürüt|gerçekleştir|yapar)",
             ),
             "NETWORK FUNCTION",
         ),
@@ -145,6 +129,7 @@ def infer_answer_type(
             (
                 r"\bhangi(?:\s+\w+){0,3}\s+prosedür\w*",
                 r"\bwhich(?:\s+\w+){0,3}\s+procedure\b",
+                r"\bhangi\s+prosedürü\s+(?:başlat|kullan|yürüt)\w*",
             ),
             "PROSEDÜR",
         ),

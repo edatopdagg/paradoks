@@ -25,8 +25,35 @@ SYSTEM_TERM_PATTERN = re.compile(
     r")\b"
 )
 
-# Modelin genel telekom açıklamalarında kullandığı standart ve meşru terimler
+# Modelin genel telekom açıklamalarında ve referanslama yaparken kullandığı standart/meşru terimler
 ALLOWED_TELECOM_IDENTIFIERS = {
+    # Şablon ve Alıntı İfadeleri (Halüsinasyon sayılmaması gerekenler)
+    "kaynak",
+    "kaynaklar",
+    "standart",
+    "standartlar",
+    "doküman",
+    "dokuman",
+    "madde",
+    "bölüm",
+    "bolum",
+    "tablo",
+    "şekil",
+    "sekil",
+    "ek",
+    "clause",
+    "section",
+    "annex",
+    "table",
+    "figure",
+    "session",
+    "request",
+    "response",
+    "accept",
+    "reject",
+    "procedure",
+    "message",
+    # 5G/Telekom Terimleri ve Arayüzleri
     "sdf",
     "gating",
     "qos",
@@ -35,6 +62,7 @@ ALLOWED_TELECOM_IDENTIFIERS = {
     "ue",
     "ran",
     "ng-ran",
+    "gnb",
     "amf",
     "smf",
     "upf",
@@ -54,10 +82,17 @@ ALLOWED_TELECOM_IDENTIFIERS = {
     "n12",
     "n14",
     "n15",
+    "n26",
+    "n50",
+    "f1",
+    "e1",
+    "x2",
+    "xn",
     "amm",
     "http",
     "tcp",
     "udp",
+    "sctp",
     "quic",
     "ip",
     "ipv4",
@@ -114,7 +149,6 @@ def _technical_identifiers(value: str) -> list[str]:
 
     for match in pattern.finditer(value or ""):
         raw_identifier = match.group(0)
-        # Ek veya tireli bitişleri temizle (örn: SDF- -> SDF)
         identifier = raw_identifier.strip("-/.,:;()[]")
         if not identifier:
             continue
@@ -229,6 +263,11 @@ def _document_used_as_answer(answer_type: str, first_sentence: str) -> bool:
         return False
 
     lower_sentence = first_sentence.casefold()
+
+    # Eğer cümlede beklenen türün kendisi (mesaj, prosedür, arayüz adı vb.) zaten geçiyorsa doküman sadece atıftır
+    if any(k in lower_sentence for k in ("request", "response", "accept", "reject", "procedure", "referans", "reference point", "protocol")):
+        return False
+
     document_words = (
         "standart",
         "standard",

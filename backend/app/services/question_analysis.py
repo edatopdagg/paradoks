@@ -46,15 +46,10 @@ _EXACT_LOOKUP_PATTERNS: dict[str, tuple[str, ...]] = {
         r"\bwhich(?:\s+\w+){0,3}\s+procedure\b",
     ),
     "STANDART / DOKÜMAN": (
-        r"\bhangi(?:\s+\w+){0,3}\s+(?:standart|standard|doküman|rfc)\w*",
-        r"\bwhich(?:\s+\w+){0,3}\s+(?:standard|document|rfc)\b",
+        r"\bhangi(?:\s+\w+){0,4}\s+(?:standart|standard|doküman|dokuman|rfc|belge|şartname|sartname|spec|specification)\w*",
+        r"\bwhich(?:\s+\w+){0,4}\s+(?:standard|document|rfc|specification)\b",
     ),
-    "ARAYÜZ / REFERANS NOKTASI": (
-        r"\bhangi(?:\s+\w+){0,4}\s+(?:arayüz|interface)\w*",
-        r"\bhangi(?:\s+\w+){0,4}\s+referans\s+nokt\w*",
-        r"\breferans\s+nokt\w*[^?]{0,60}\b(?:hangisidir|nedir|adı\s+ne)\b",
-        r"\bwhich(?:\s+\w+){0,4}\s+reference\s+point\b",
-    ),
+   
     "PROTOKOL": (
         r"\bhangi(?:\s+\w+){0,4}\s+protokol\w*",
         r"\bwhich(?:\s+\w+){0,4}\s+protocol\b",
@@ -267,7 +262,7 @@ def _question_anchors(question: str) -> list[str]:
 
     for match in re.finditer(
         r"\b(?:HTTP/3|HTTP|QPACK|QUIC|NGAP|NAS|5GS|5G|"
-        r"N\d{1,3}|UE|AMF|SMF|UPF|PUT|DELETE|RFC\s*\d+|"
+        r"N\d{1,3}|UE|AMF|SMF|UPF|PUT|DELETE|RFC\s*\d+|\d{4,5}|"
         r"idempoten\w*|multicast|broadcast|warning\s+message)\b",
         question or "",
         flags=re.IGNORECASE,

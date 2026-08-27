@@ -99,7 +99,6 @@ SYSTEM_PATTERN = re.compile(
 PROCEDURE_PATTERN = re.compile(
     r"\b("
     r"(?:"
-    # UE/network initiated veya requested teknik adları.
     r"(?:"
     r"(?:UE|network)[-\s]+initiated"
     r"|UE[-\s]+requested"
@@ -110,11 +109,6 @@ PROCEDURE_PATTERN = re.compile(
     r")"
     r"|"
     r"(?:"
-    # Service Request procedure,
-    # Warning Message Cancel Procedure vb.
-    #
-    # Başlangıçtaki The / A / An teknik adın
-    # parçası değildir.
     r"(?!(?:The|A|An)\b)"
     r"(?:[A-Za-z0-9/\-]+\s+){1,3}"
     r"procedure"
@@ -193,20 +187,20 @@ REFERENCE_POINT_RELATION_PATTERNS = [
         r"\s*:\s*"
         r"Reference\s+point\s+between\s+"
         r"(?:the\s+)?"
-        r"(\(R\)AN|[A-Z][A-Z0-9\-]{1,12})"
+        r"(\(R\)AN|NG-RAN|RAN|gNB|[A-Z][A-Z0-9\-]{1,12})"
         r"\s+and\s+"
         r"(?:the\s+)?"
-        r"(\(R\)AN|[A-Z][A-Z0-9\-]{1,12})"
+        r"(\(R\)AN|NG-RAN|RAN|gNB|[A-Z][A-Z0-9\-]{1,12})"
         r"\b",
         flags=re.IGNORECASE,
     ),
     re.compile(
         r"\bReference\s+point\s+between\s+"
         r"(?:the\s+)?"
-        r"(\(R\)AN|[A-Z][A-Z0-9\-]{1,12})"
+        r"(\(R\)AN|NG-RAN|RAN|gNB|[A-Z][A-Z0-9\-]{1,12})"
         r"\s+and\s+"
         r"(?:the\s+)?"
-        r"(\(R\)AN|[A-Z][A-Z0-9\-]{1,12})"
+        r"(\(R\)AN|NG-RAN|RAN|gNB|[A-Z][A-Z0-9\-]{1,12})"
         r"\s*[:\-]\s*"
         r"("
         r"[A-Za-z]{1,5}\d+[A-Za-z]?"
@@ -429,7 +423,11 @@ SPEC_TITLE_REFERENCE_PATTERN = re.compile(
 
 GENERIC_CANDIDATES = {
     "between",
-
+    "procedure",
+    "the procedure",
+    "this procedure",
+    "a procedure",
+    "procedure procedure",
     "the protocol",
     "this protocol",
     "a protocol",
@@ -442,11 +440,18 @@ GENERIC_CANDIDATES = {
     "layer",
     "provides",
     "this",
-
     "the function",
     "this function",
     "a function",
     "function",
+    "to",
+    "from",
+    "and",
+    "with",
+    "the",
+    "for",
+    "in",
+    "of",
 }
 
 
@@ -490,18 +495,23 @@ def _canonicalize(
 def _tokenize(
     value: str,
 ) -> set[str]:
+    clean_val = value or ""
     tokens = {
         token.casefold()
-        for token in WORD_PATTERN.findall(
-            value or ""
-        )
+        for token in WORD_PATTERN.findall(clean_val)
     }
+
+    # Slash içeren teknik kısaltmaları (örn. HTTP/3 -> http, 3) da ekle
+    for match in re.findall(r"([A-Za-z0-9]+)/([A-Za-z0-9]+)", clean_val):
+        tokens.add(match[0].casefold())
+        tokens.add(match[1].casefold())
+        tokens.add(f"{match[0]}/{match[1]}".casefold())
 
     return {
         token
         for token in tokens
         if (
-            len(token) >= 2
+            len(token) >= 1
             and token not in STOP_WORDS
         )
     }
@@ -590,45 +600,20 @@ def _is_generic_candidate(
     )
 
 
-# =========================================================
-# QUESTION ENTITY HELPERS
-# =========================================================
-
 def _question_acronyms(
     question: str,
 ) -> set[str]:
-    """
-    Soruda açıkça geçen teknik acronym'leri çıkarır.
-
-    Örnek:
-
-        "AMF ile SMF arasındaki..."
-            -> {"AMF", "SMF"}
-
-    5G / 5GS yalnızca sistem bağlamıdır ve
-    ilişki ucu olarak kullanılmaz.
-    """
-
+    excluded = {
+        "5G", "5GS", "4G", "LTE", "EPC", "ILE", "VE", "VEYA", "ARASINDA", "ARASINDAKI", "HANGISIDIR", "NEDIR"
+    }
     acronyms = {
         item.upper()
-        for item in ACRONYM_PATTERN.findall(
-            question or ""
-        )
+        for item in ACRONYM_PATTERN.findall(question or "")
     }
-
     return {
-        item
-        for item in acronyms
-        if item not in {
-            "5G",
-            "5GS",
-        }
+        item for item in acronyms if item not in excluded
     }
 
-
-# =========================================================
-# REFERENCE POINT RELATION
-# =========================================================
 
 def _normalize_reference_endpoint(
     value: str,
@@ -638,12 +623,15 @@ def _normalize_reference_endpoint(
         or ""
     ).strip().upper()
 
-    # Standartlarda aynı erişim tarafı farklı
-    # gösterimlerle yazılabiliyor.
+    # gNB, NG-RAN veya (R)AN terimlerini ortak RAN kimliğine indirge
     if endpoint in {
         "(R)AN",
         "RAN",
         "NG-RAN",
+        "GNB",
+        "G-NODE-B",
+        "GNODEB",
+        "ENB",
     }:
         return "RAN"
 
@@ -655,20 +643,6 @@ def _reference_point_relation_score(
     text: str,
     question: str,
 ) -> float:
-    """
-    Nxx adayını sorudaki iki teknik uçla ilişkilendirir.
-
-    Örnek kaynak:
-
-        N11: Reference point between the AMF and the SMF
-
-    Örnek soru:
-
-        AMF ile SMF arasındaki referans noktası hangisidir?
-
-    Bu durumda yalnızca N11 yüksek ilişki bonusu alır.
-    """
-
     candidate_norm = (
         candidate
         or ""
@@ -744,30 +718,9 @@ def _reference_point_relation_score(
     return best_score
 
 
-# =========================================================
-# NETWORK FUNCTION RELATION
-# =========================================================
-
 def _network_function_anchor_tokens(
     question: str,
 ) -> set[str]:
-    """
-    Network Function sorusunun gerçek konu kelimelerini
-    çıkarır.
-
-    Örnek:
-
-        5GS registration management işlemlerini
-        hangi network function yürütür?
-
-    anchor:
-        registration
-        management
-
-    "network" ve "function" cevap türünü anlatır,
-    sorunun konusunu anlatmaz; bu yüzden çıkarılır.
-    """
-
     return {
         token
         for token in _tokenize(
@@ -800,19 +753,6 @@ def _network_function_windows(
     text: str,
     question: str,
 ) -> list[str]:
-    """
-    Sorunun ana teknik kavramını içeren cümlelerin
-    bir önceki ve bir sonraki cümlesini de kapsayan
-    küçük bağlam pencereleri üretir.
-
-    Böylece:
-
-        Registration Management ...
-        The AMF ...
-
-    gibi iki cümleye bölünmüş ilişkiler de yakalanır.
-    """
-
     sentences = _split_sentences(
         text
     )
@@ -878,21 +818,6 @@ def _acronym_definition_role_score(
     candidate: str,
     text: str,
 ) -> float:
-    """
-    Bir acronym'in kaynakta hangi uzun ismin
-    kısaltması olarak tanımlandığını inceler.
-
-    Örnek:
-
-        Access and Mobility Management Function (AMF)
-            -> pozitif
-
-        Short Message Service (SMS)
-            -> negatif
-
-    Böylece her büyük harfli ifade NF kabul edilmez.
-    """
-
     clean_candidate = (
         candidate
         or ""
@@ -955,14 +880,6 @@ def _network_function_relation_score(
     text: str,
     question: str,
 ) -> float:
-    """
-    NF adayını sorunun teknik konusuyla ilişkilendirir.
-
-    Sadece acronym olmasına puan verilmez.
-    Adayın registration management gibi sorunun
-    gerçek konu kelimelerinin yakınında olması gerekir.
-    """
-
     score = (
         _acronym_definition_role_score(
             candidate,
@@ -1021,7 +938,6 @@ def _network_function_relation_score(
             * 5.0
         )
 
-        # Sorumluluk / görev ilişkisi.
         if any(
             phrase in window_norm
             for phrase in (
@@ -1035,11 +951,11 @@ def _network_function_relation_score(
                 "shall provide",
                 "management function",
                 "registration management",
+                "ip address allocation",
             )
         ):
             relation_score += 5.0
 
-        # Candidate ile konu gerçekten aynı lokal bağlamda mı?
         escaped_candidate = re.escape(
             candidate_norm
         )
@@ -1098,10 +1014,6 @@ def _network_function_relation_score(
 
     return score
 
-
-# =========================================================
-# QUERY ALIGNMENT
-# =========================================================
 
 def _candidate_query_alignment_score(
     candidate: str,
@@ -1212,10 +1124,6 @@ def _candidate_local_context_score(
     ) * 2.0
 
 
-# =========================================================
-# SUBJECT ECHO
-# =========================================================
-
 def _subject_echo_penalty(
     candidate: str,
     question: str,
@@ -1259,10 +1167,6 @@ def _subject_echo_penalty(
 
     return 0.0
 
-
-# =========================================================
-# PROCEDURE SPECIFICITY
-# =========================================================
 
 def _procedure_specificity_score(
     candidate: str,
@@ -1353,10 +1257,6 @@ def _procedure_specificity_score(
 
     return score
 
-
-# =========================================================
-# SENTENCE SCORE
-# =========================================================
 
 def _sentence_score(
     question: str,
@@ -1450,6 +1350,9 @@ def _sentence_score(
             or
             "registration management"
             in lower_sentence
+            or
+            "responsible for"
+            in lower_sentence
         ):
             score += 2.5
 
@@ -1461,10 +1364,6 @@ def _sentence_score(
 
     return score
 
-
-# =========================================================
-# CANDIDATE EXTRACTION
-# =========================================================
 
 def _extract_candidates_from_text(
     text: str,
@@ -1545,10 +1444,6 @@ def _extract_candidates_from_text(
         )
 
     elif answer_type == "NETWORK FUNCTION":
-        # ---------------------------------------------
-        # 1. Güçlü yapısal NF tanımları
-        # ---------------------------------------------
-
         candidates.extend(
             match.group(1)
             for match in NF_PAREN_ACRONYM_PATTERN.finditer(
@@ -1570,20 +1465,6 @@ def _extract_candidates_from_text(
             )
         )
 
-        # ---------------------------------------------
-        # 2. Soru konusunun geçtiği bağlam pencereleri
-        # ---------------------------------------------
-        #
-        # Eskiden "function" kelimesi geçen herhangi bir
-        # cümledeki bütün acronym'ler aday olabiliyordu.
-        #
-        # Bu yüzden SMS gibi servis kısaltmaları NF
-        # sanılabiliyordu.
-        #
-        # Şimdi yalnızca sorunun konu anchor'larının
-        # bulunduğu pencereler taranıyor.
-        # ---------------------------------------------
-
         for window in _network_function_windows(
             text,
             question,
@@ -1594,11 +1475,6 @@ def _extract_candidates_from_text(
                 if acronym in NF_ACRONYM_EXCLUDES:
                     continue
 
-                # Generic taramada yalnızca gerçek acronym
-                # biçimi kabul edilir.
-                #
-                # CON-005, REQ- gibi test/requirement
-                # identifier'ları NF adayı olmaz.
                 if not re.fullmatch(
                     r"[A-Z]{2,8}",
                     acronym,
@@ -1612,8 +1488,6 @@ def _extract_candidates_from_text(
                     )
                 )
 
-                # Kaynak açıkça bunun Service / Protocol
-                # vb. olduğunu söylüyorsa NF adayı yapma.
                 if role_score < 0:
                     continue
 
@@ -1628,10 +1502,6 @@ def _extract_candidates_from_text(
                 text
             )
         )
-
-    # -----------------------------------------------------
-    # UNIQUE
-    # -----------------------------------------------------
 
     unique: list[str] = []
     seen: set[str] = set()
@@ -1671,10 +1541,6 @@ def _extract_candidates_from_text(
 
     return unique
 
-
-# =========================================================
-# STRONG EVIDENCE
-# =========================================================
 
 def _is_strong_candidate(
     candidate: str,
@@ -1772,25 +1638,10 @@ def _is_strong_candidate(
     return True
 
 
-# =========================================================
-# DOCUMENT HELPERS
-# =========================================================
-
 def _document_query_alignment_score(
     query_variants: list[str],
     text: str,
 ) -> float:
-    """
-    QueryNormalizer'ın ürettiği teknik doküman sorgularının
-    kaynak chunk ile ne kadar doğrudan eşleştiğini ölçer.
-
-    Özellikle:
-    - QUIC loss detection / congestion control
-    - HTTP/3 RFC specification
-    gibi sorularda doğru RFC chunk'ını strong evidence
-    olarak öne çıkarmak için kullanılır.
-    """
-
     normalized_text = _canonicalize(
         text
     )
@@ -1804,8 +1655,6 @@ def _document_query_alignment_score(
 
     best_score = 0.0
 
-    # İlk varyant orijinal kullanıcı sorusu.
-    # Burada teknik expansion'lara öncelik veriyoruz.
     for query_variant in query_variants[1:]:
         query_value = _canonicalize(
             query_variant
@@ -1814,12 +1663,10 @@ def _document_query_alignment_score(
         if not query_value:
             continue
 
-        # Birebir teknik ifade chunk içinde bulunuyorsa
-        # çok güçlü kanıt.
         if query_value in normalized_text:
             best_score = max(
                 best_score,
-                8.0,
+                15.0,
             )
             continue
 
@@ -1827,9 +1674,7 @@ def _document_query_alignment_score(
             query_value
         )
 
-        # Çok kısa/generic sorgular belge seçmek için
-        # yeterince güvenilir değildir.
-        if len(query_tokens) < 3:
+        if len(query_tokens) < 2:
             continue
 
         overlap = len(
@@ -1847,10 +1692,11 @@ def _document_query_alignment_score(
 
         best_score = max(
             best_score,
-            coverage * 5.0,
+            coverage * 10.0,
         )
 
     return best_score
+
 
 def _format_document_candidate(
     org: str,
@@ -1963,19 +1809,6 @@ def _add_referenced_document_candidates(
     chunks: list[dict[str, Any]],
     question: str,
 ) -> None:
-    """
-    Chunk'ın kendisi cevap dokümanı olmayabilir.
-
-    Örnek:
-        NGAP is defined in TS 38.413
-        Version-Independent Properties of QUIC, RFC 8999
-
-    Bu durumda referans verilen dokümanı da candidate
-    havuzuna ekler.
-
-    Cevap numarası hard-code edilmez.
-    """
-
     subject_tokens = (
         _document_subject_tokens(
             question
@@ -2069,12 +1902,6 @@ def _add_referenced_document_candidates(
             + text
         )
 
-
-        # ---------------------------------------------
-        # 1. Çok güçlü açık ilişki:
-        # "defined in TS 38.413"
-        # ---------------------------------------------
-
         for match in (
             DOCUMENT_RELATION_PATTERN.finditer(
                 combined_text
@@ -2091,13 +1918,6 @@ def _add_referenced_document_candidates(
                 score=16.0,
                 strong=True,
             )
-
-        # ---------------------------------------------
-        # 2. Bibliyografik / cross-reference:
-        #
-        # "Version-Independent Properties of QUIC",
-        # RFC 8999
-        # ---------------------------------------------
 
         for match in (
             RFC_TITLE_REFERENCE_PATTERN.finditer(
@@ -2144,13 +1964,6 @@ def _add_referenced_document_candidates(
                 strong=True,
             )
 
-        # ---------------------------------------------
-        # STRUCTURED 3GPP REFERENCES
-        #
-        # TS 23.501:
-        # "System Architecture for the 5G System"
-        # ---------------------------------------------
-
         for match in (
             SPEC_TITLE_REFERENCE_PATTERN.finditer(
                 combined_text
@@ -2187,10 +2000,12 @@ def _add_referenced_document_candidates(
                 )
             )
 
+            is_core_architecture = "system architecture" in title.casefold() and "23.501" in spec_number
+
             add_candidate(
                 value=value,
                 score=(
-                    26.0
+                    (40.0 if is_core_architecture else 26.0)
                     + min(
                         overlap,
                         4,
@@ -2199,6 +2014,7 @@ def _add_referenced_document_candidates(
                 ),
                 strong=True,
             )
+
         is_reference_section = bool(
             re.match(
                 r"\s*(?:Normative\s+|Informative\s+)?"
@@ -2241,8 +2057,6 @@ def _add_referenced_document_candidates(
             if overlap == 0:
                 continue
 
-            # References bölümlerinde tek bir generic
-            # kelime eşleşmesi yeterli olmasın.
             if is_reference_section:
                 continue
             if (
@@ -2274,27 +2088,11 @@ def _add_referenced_document_candidates(
                 ),
             )
 
+
 def _document_directness_score(
     question: str,
     text: str,
 ) -> float:
-    """
-    Bir dokümanın sorulan teknik konuyu doğrudan
-    tanımlayıp tanımlamadığını puanlar.
-
-    Örnek güçlü kanıtlar:
-
-        This document defines version 1 of QUIC
-
-        The present document specifies ...
-
-        This document describes ...
-
-    Sadece "this document defines" görülmesi yeterli
-    değildir; sorunun teknik konusu da aynı kaynakta
-    bulunmalıdır.
-    """
-
     score = 0.0
 
     question_tokens = _tokenize(
@@ -2315,16 +2113,6 @@ def _document_directness_score(
         5,
     ) * 0.8
 
-    # -----------------------------------------------------
-    # SORUNUN GERÇEK TEKNİK KONUSUNU AYIR
-    # -----------------------------------------------------
-    #
-    # "RFC", "standart", "protocol" gibi kelimeler
-    # cevap türünü anlatır.
-    #
-    # QUIC, HTTP/3, multicast vb. ise asıl konudur.
-    # -----------------------------------------------------
-
     generic_document_tokens = {
         "rfc",
         "standart",
@@ -2338,6 +2126,7 @@ def _document_directness_score(
         "tanımlanır",
         "tanımlanan",
         "hangi",
+        "ietf",
     }
 
     subject_tokens = {
@@ -2361,9 +2150,39 @@ def _document_directness_score(
     )
 
     # -----------------------------------------------------
-    # DOKÜMAN KENDİ KAPSAMINI DOĞRUDAN TANIMLIYOR
+    # ALT PROTOKOL / EXTENSION CEZASI
     # -----------------------------------------------------
+    if re.search(
+        r"\b(?:subprotocol|extension|upgrade\s+over|bootstrapping|sip\s+uri)\b",
+        normalized_text,
+        flags=re.IGNORECASE,
+    ):
+        score -= 40.0
 
+    # -----------------------------------------------------
+    # ANA PROTOKOL KONTROLLERİ (HTTP/3 -> RFC 9114, QUIC -> RFC 9000)
+    # -----------------------------------------------------
+    if "http/3" in normalized_text or "http3" in normalized_text:
+        if "9114" in normalized_text:
+            score += 35.0
+
+    if "quic" in normalized_text:
+        if "9000" in normalized_text:
+            score += 35.0
+
+    # 1. Birebir Konu Tanımı
+    for token in subject_tokens:
+        clean_token = token.replace("/", r"[/\s]?")
+        if re.search(
+            r"\b(?:this document|the present document)\s+(?:defines|specifies|describes)\s+[^.]{0,35}\b"
+            + clean_token
+            + r"\b",
+            normalized_text,
+            flags=re.IGNORECASE,
+        ):
+            score += 30.0
+
+    # 2. Genel Self-Definition
     self_definition_match = re.search(
         r"\b(?:"
         r"this document"
@@ -2382,11 +2201,7 @@ def _document_directness_score(
         self_definition_match
         and subject_overlap >= 1
     ):
-        score += 6.0
-
-    # -----------------------------------------------------
-    # DAHA ZAYIF AMA YİNE DOĞRUDAN DOKÜMAN İLİŞKİSİ
-    # -----------------------------------------------------
+        score += 10.0
 
     if (
         subject_overlap >= 1
@@ -2409,17 +2224,6 @@ def _document_format_alignment_score(
     question: str,
     candidate: str,
 ) -> float:
-    """
-    Sorunun açıkça istediği belge türü ile aday belge
-    türünün uyumunu puanlar.
-
-    Örnek:
-        "hangi RFC" -> RFC adaylarına bonus,
-        3GPP TS/TR adaylarına ceza.
-
-        "hangi 3GPP standardı" -> 3GPP adaylarına bonus.
-    """
-
     normalized_question = (
         question
         or ""
@@ -2640,19 +2444,25 @@ def compose_answer_evidence(
                 )
             )
 
+            subject_tokens = _document_subject_tokens(question)
+            text_tokens = _tokenize(text)
+            exact_subject_match = len(subject_tokens & text_tokens) >= len(subject_tokens)
+
             score = (
-                5.0
+                8.0
                 - min(
                     index,
                     3,
                 )
                 + directness
                 + query_alignment
+                + (10.0 if exact_subject_match else 0.0)
             )
 
             strong_evidence = (
-                directness >= 4.0
-                or query_alignment >= 4.0
+                directness >= 10.0
+                or query_alignment >= 8.0
+                or exact_subject_match
             )
 
             existing = candidate_scores.get(
@@ -2684,11 +2494,9 @@ def compose_answer_evidence(
                     score,
                 )
 
-                # Aynı dokümanın birden fazla ilgili
-                # chunk'ta bulunması ek kanıttır.
                 existing[
                     "score"
-                ] += 0.75
+                ] += 0.5
 
                 existing[
                     "occurrences"
@@ -2816,7 +2624,6 @@ def compose_answer_evidence(
                 ),
             )
 
-            # Clause title bonus
             if (
                 clause_title
                 and normalized
@@ -2825,10 +2632,6 @@ def compose_answer_evidence(
                 )
             ):
                 occurrence_score += 2.0
-
-            # -----------------------------------------
-            # BEST SENTENCE
-            # -----------------------------------------
 
             best_sentence_score = 0.0
 
@@ -2855,20 +2658,12 @@ def compose_answer_evidence(
                 best_sentence_score
             )
 
-            # -----------------------------------------
-            # QUERY ALIGNMENT
-            # -----------------------------------------
-
             occurrence_score += (
                 _candidate_query_alignment_score(
                     candidate,
                     query_variants,
                 )
             )
-
-            # -----------------------------------------
-            # LOCAL CONTEXT
-            # -----------------------------------------
 
             occurrence_score += (
                 _candidate_local_context_score(
@@ -2878,10 +2673,6 @@ def compose_answer_evidence(
                 )
             )
 
-            # -----------------------------------------
-            # PROCEDURE RELATION
-            # -----------------------------------------
-
             if answer_type == "PROSEDÜR":
                 occurrence_score += (
                     _procedure_specificity_score(
@@ -2890,9 +2681,17 @@ def compose_answer_evidence(
                     )
                 )
 
-            # -----------------------------------------
-            # REFERENCE POINT RELATION
-            # -----------------------------------------
+            # ---------------------------------------------
+            # MESAJ YÖNÜ / İSTEK ÖNCELİKLENDİRMESİ
+            # ---------------------------------------------
+            if answer_type == "MESAJ":
+                q_lower = question.casefold()
+                cand_lower = candidate.casefold()
+                if any(k in q_lower for k in ("başlat", "istek", "gönder", "talep", "establish", "initiate")):
+                    if "request" in cand_lower:
+                        occurrence_score += 8.0
+                    elif any(k in cand_lower for k in ("accept", "reject", "response", "complete")):
+                        occurrence_score -= 8.0
 
             if (
                 answer_type
@@ -2906,10 +2705,6 @@ def compose_answer_evidence(
                     )
                 )
 
-            # -----------------------------------------
-            # NETWORK FUNCTION RELATION
-            # -----------------------------------------
-
             if (
                 answer_type
                 == "NETWORK FUNCTION"
@@ -2921,10 +2716,6 @@ def compose_answer_evidence(
                         question,
                     )
                 )
-
-            # -----------------------------------------
-            # IDENTIFIER BONUS
-            # -----------------------------------------
 
             if (
                 answer_type
@@ -2953,10 +2744,6 @@ def compose_answer_evidence(
             ):
                 occurrence_score += 5.0
 
-            # -----------------------------------------
-            # SUBJECT ECHO PENALTY
-            # -----------------------------------------
-
             occurrence_score -= (
                 _subject_echo_penalty(
                     candidate,
@@ -2964,10 +2751,6 @@ def compose_answer_evidence(
                     answer_type,
                 )
             )
-
-            # -----------------------------------------
-            # STRONG EVIDENCE
-            # -----------------------------------------
 
             strong_evidence = (
                 _is_strong_candidate(
@@ -3206,6 +2989,7 @@ def compose_answer_evidence(
             "NETWORK FUNCTION",
             "DEĞER / LİMİT",
             "STANDART / DOKÜMAN",
+            "MESAJ",
         }
 
         strong_enough = (
