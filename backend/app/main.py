@@ -2,7 +2,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.schemas import ChatRequest, ChatResponse
-from app.services.chat_service import generate_reply
+from app.services.chat_orchestrator import (
+    generate_chat_response,
+)
 
 
 app = FastAPI()
@@ -58,9 +60,10 @@ def chat(
     request: ChatRequest,
 ) -> ChatResponse:
 
-    result = generate_reply(
-        request.message
-    )
+    result = generate_chat_response(
+    message=request.message,
+    conversation_id=request.conversation_id,
+)
 
     return ChatResponse(
         **result
