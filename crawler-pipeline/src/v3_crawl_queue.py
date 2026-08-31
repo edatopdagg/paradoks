@@ -36,10 +36,7 @@ class V3CrawlQueue:
         catalog: V3Catalog,
     ):
         self.catalog = catalog
-        self.connection = (
-            catalog.connection
-        )
-
+        self.connection = catalog.connection
         self._create_schema()
 
     def _create_schema(self) -> None:
@@ -87,22 +84,21 @@ class V3CrawlQueue:
                 "depth negatif olamaz."
             )
 
-        has_version = (
-            self.connection.execute(
-                """
-                SELECT 1
-                FROM document_versions
-                WHERE document_id = ?
-                LIMIT 1
-                """,
-                (document_id,),
-            ).fetchone()
-        )
+        has_version = self.connection.execute(
+            """
+            SELECT 1
+            FROM document_versions
+            WHERE document_id = ?
+            LIMIT 1
+            """,
+            (document_id,),
+        ).fetchone()
 
-        if has_version:
-            initial_status = "indexed"
-        else:
-            initial_status = "pending"
+        initial_status = (
+            "indexed"
+            if has_version
+            else "pending"
+        )
 
         self.connection.execute(
             """
@@ -163,6 +159,9 @@ class V3CrawlQueue:
         self,
         *,
         max_depth: int | None = None,
+        organizations: (
+            tuple[str, ...] | None
+        ) = None,
     ) -> CrawlJob | None:
         where = (
             "job.status = 'pending'"
@@ -178,6 +177,28 @@ class V3CrawlQueue:
             parameters.append(
                 max_depth
             )
+
+        if organizations:
+            normalized_orgs = tuple(
+                org.strip().upper()
+                for org in organizations
+                if org.strip()
+            )
+
+            if normalized_orgs:
+                placeholders = ", ".join(
+                    "?"
+                    for _ in normalized_orgs
+                )
+
+                where += (
+                    " AND document.org IN "
+                    f"({placeholders})"
+                )
+
+                parameters.extend(
+                    normalized_orgs
+                )
 
         try:
             self.connection.execute(
@@ -329,10 +350,11 @@ class V3CrawlQueue:
                 f"{document_id}"
             )
 
-        if row["attempts"] >= max_attempts:
-            next_status = "failed"
-        else:
-            next_status = "pending"
+        next_status = (
+            "failed"
+            if row["attempts"] >= max_attempts
+            else "pending"
+        )
 
         self.mark_status(
             document_id=document_id,
