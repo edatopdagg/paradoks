@@ -162,6 +162,9 @@ class V3CrawlQueue:
         organizations: (
             tuple[str, ...] | None
         ) = None,
+        excluded_document_ids: (
+            tuple[str, ...] | None
+        ) = None,
     ) -> CrawlJob | None:
         where = (
             "job.status = 'pending'"
@@ -199,6 +202,16 @@ class V3CrawlQueue:
                 parameters.extend(
                     normalized_orgs
                 )
+
+        if excluded_document_ids:
+            placeholders = ", ".join(
+                "?" for _ in excluded_document_ids
+            )
+            where += (
+                " AND job.document_id NOT IN "
+                f"({placeholders})"
+            )
+            parameters.extend(excluded_document_ids)
 
         try:
             self.connection.execute(

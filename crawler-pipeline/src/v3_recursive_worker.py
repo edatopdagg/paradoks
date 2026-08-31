@@ -60,6 +60,7 @@ def run_worker(
         )
 
     claimed_count = 0
+    claimed_document_ids: set[str] = set()
     indexed_count = 0
     blocked_count = 0
     unresolved_count = 0
@@ -73,6 +74,9 @@ def run_worker(
             job = queue.claim_next(
                 max_depth=max_depth,
                 organizations=organizations,
+            excluded_document_ids=tuple(
+                claimed_document_ids
+            ),
             )
 
             if job is None:
@@ -82,6 +86,9 @@ def run_worker(
                 break
 
             claimed_count += 1
+            claimed_document_ids.add(
+                job.document_id
+            )
 
             label = (
                 f"{job.org} {job.code}"

@@ -1,6 +1,9 @@
 import hashlib
 import io
 import re
+import shutil
+import subprocess
+import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -134,6 +137,60 @@ def _read_docx_bytes(
     return "\n".join(parts)
 
 
+def _read_legacy_doc_bytes(
+    raw_bytes: bytes,
+) -> str:
+    antiword_path = shutil.which(
+        "antiword"
+    )
+
+    if antiword_path is None:
+        raise RuntimeError(
+            "Legacy .doc belgesi bulundu ancak "
+            "antiword kurulu de?il."
+        )
+
+    with tempfile.TemporaryDirectory(
+        prefix="paradoks_legacy_doc_"
+    ) as temporary_directory:
+        document_path = (
+            Path(temporary_directory)
+            / "document.doc"
+        )
+
+        document_path.write_bytes(
+            raw_bytes
+        )
+
+        result = subprocess.run(
+            [
+                antiword_path,
+                "-m",
+                "UTF-8.txt",
+                str(document_path),
+            ],
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+
+    if result.returncode != 0:
+        error_message = result.stderr.decode(
+            "utf-8",
+            errors="replace",
+        ).strip()
+
+        raise ValueError(
+            "Legacy .doc metni okunamad?: "
+            f"{error_message}"
+        )
+
+    return result.stdout.decode(
+        "utf-8",
+        errors="replace",
+    ).strip()
+
+
 def _extract_3gpp_docx_parts(
     raw_zip: bytes,
     requested_code: str,
@@ -153,7 +210,7 @@ def _extract_3gpp_docx_parts(
             for name in archive.namelist()
             if (
                 name.casefold().endswith(
-                    ".docx"
+                    (".docx", ".doc")
                 )
                 and not name.startswith(
                     "__MACOSX/"
@@ -500,10 +557,21 @@ def fetch_document(
                 part_path
             )
 
-            part_texts.append(
-                _read_docx_bytes(
+            if docx_name.casefold().endswith(
+                ".docx"
+            ):
+                part_text = _read_docx_bytes(
                     docx_bytes
                 )
+            else:
+                part_text = (
+                    _read_legacy_doc_bytes(
+                        docx_bytes
+                    )
+                )
+
+            part_texts.append(
+                part_text
             )
 
         document_text = "\n".join(
