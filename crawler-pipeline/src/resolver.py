@@ -32,6 +32,36 @@ def _links(resp: requests.Response) -> list[str]:
 
 # --- 3GPP ---------------------------------------------------------------
 
+def _three_gpp_archive_filename(
+    link: str,
+    expected_number: str,
+) -> str | None:
+    clean_link = (
+        link.split("?", 1)[0]
+        .split("#", 1)[0]
+        .rstrip("/")
+    )
+
+    filename = clean_link.rsplit(
+        "/",
+        1,
+    )[-1]
+
+    pattern = (
+        rf"{re.escape(expected_number)}"
+        r"-[0-9a-zA-Z]{3}\.zip"
+    )
+
+    if not re.fullmatch(
+        pattern,
+        filename,
+        flags=re.IGNORECASE,
+    ):
+        return None
+
+    return filename
+
+
 def _resolve_3gpp(ref: Reference) -> ResolvedSource:
     parts = ref.code.split()
     if len(parts) != 2:
@@ -44,11 +74,23 @@ def _resolve_3gpp(ref: Reference) -> ResolvedSource:
     if not resp:
         return ResolvedSource(reference=ref, status=DocStatus.UNRESOLVED)
 
-    # 3GPP folders list versioned .zip files, e.g. 23041-k00.zip
+    expected_number = "".join(
+        re.findall(
+            r"\d",
+            parts[1],
+        )
+    )
+
+    # Yaln?zca yay?mlanm?? standart s?r?m paketlerini kabul et.
+    # ?rnek: 23041-k00.zip
     zip_links = [
-        l
-        for l in _links(resp)
-        if l.lower().endswith(".zip")
+        link
+        for link in _links(resp)
+        if _three_gpp_archive_filename(
+            link,
+            expected_number,
+        )
+        is not None
     ]
 
     if not zip_links:
@@ -58,8 +100,21 @@ def _resolve_3gpp(ref: Reference) -> ResolvedSource:
             source_url=folder_url,
         )
 
-    latest = sorted(zip_links)[-1]
-    file_url = urljoin(folder_url, latest)
+    latest = max(
+        zip_links,
+        key=lambda link: (
+            _three_gpp_archive_filename(
+                link,
+                expected_number,
+            )
+            or ""
+        ).casefold(),
+    )
+
+    file_url = urljoin(
+        folder_url,
+        latest,
+    )
 
     return ResolvedSource(
         reference=ref,
