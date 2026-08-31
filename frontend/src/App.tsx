@@ -266,6 +266,7 @@ function App() {
     try {
       const response = await sendChatMessage(
         trimmedQuestion,
+        resolvedConversationId,
       )
 
       setApiStatus("online")

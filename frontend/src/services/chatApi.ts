@@ -15,7 +15,18 @@ export type BlockedSource = {
   source_url: string
 }
 
+export type PlannedQuestion = {
+  text: string
+  intent: string
+  answered: boolean
+}
+
 export type ChatResponse = {
+  conversation_id: string | null
+  detected_language: "tr" | "en"
+  questions: PlannedQuestion[]
+  standard_answer: string
+  assistant_answer: string
   reply: string
   sources: Source[]
   blocked_sources: BlockedSource[]
@@ -27,6 +38,7 @@ const API_BASE_URL =
 
 export async function sendChatMessage(
   message: string,
+  conversationId: string,
 ): Promise<ChatResponse> {
   const response = await fetch(
     `${API_BASE_URL}/chat`,
@@ -36,8 +48,9 @@ export async function sendChatMessage(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        message,
-      }),
+      message,
+      conversation_id: conversationId,
+    }),
     },
   )
 
