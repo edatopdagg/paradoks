@@ -2,7 +2,7 @@ import os
 import re
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin
+from urllib.parse import quote_plus, urljoin
 from dotenv import load_dotenv
 
 from models import Reference, ResolvedSource, DocStatus
@@ -272,9 +272,15 @@ def _resolve_etsi(ref: Reference) -> ResolvedSource:
 
 # --- ITU-T -------------------------------------------------------------
 
-def _resolve_itu(ref: Reference) -> ResolvedSource:
+def _resolve_itu(
+    ref: Reference,
+) -> ResolvedSource:
     code_clean = ref.code.strip()
-    landing_url = f"https://www.itu.int/rec/T-REC-{code_clean}/en"
+
+    landing_url = (
+        "https://www.itu.int/rec/"
+        f"T-REC-{code_clean}/en"
+    )
 
     resp = _get(landing_url)
 
@@ -282,25 +288,49 @@ def _resolve_itu(ref: Reference) -> ResolvedSource:
         return ResolvedSource(
             reference=ref,
             status=DocStatus.UNRESOLVED,
+            source_url=landing_url,
         )
 
+    links = _links(resp)
+
+    # ITU'nun ?cretsiz ?ngilizce PDF ba?lant?lar?
+    # .pdf ile bitmez; PDF-E sorgusu i?erir.
     pdf_link = next(
         (
-            l
-            for l in _links(resp)
-            if l.lower().endswith(".pdf")
+            link
+            for link in links
+            if (
+                "dologin_pub.asp"
+                in link.casefold()
+                and "pdf-e"
+                in link.casefold()
+            )
         ),
         None,
     )
+
+    if pdf_link is None:
+        pdf_link = next(
+            (
+                link
+                for link in links
+                if link.casefold().endswith(
+                    ".pdf"
+                )
+            ),
+            None,
+        )
 
     if pdf_link:
         return ResolvedSource(
             reference=ref,
             status=DocStatus.PENDING,
-            source_url=urljoin(landing_url, pdf_link),
+            source_url=urljoin(
+                landing_url,
+                pdf_link,
+            ),
         )
 
-    # no free PDF link found on the landing page -> likely paywalled/restricted
     return ResolvedSource(
         reference=ref,
         status=DocStatus.BLOCKED,
@@ -335,9 +365,19 @@ def _search_google_pdf(query: str) -> str | None:
     return None
 
 
-def _resolve_gsma(ref: Reference) -> ResolvedSource:
+def _resolve_gsma(
+    ref: Reference,
+) -> ResolvedSource:
+    code_clean = ref.code.strip()
+
     pdf_link = _search_google_pdf(
-        f"site:gsma.com {ref.code.strip()} filetype:pdf"
+        "site:gsma.com "
+        f"{code_clean} filetype:pdf"
+    )
+
+    landing_url = (
+        "https://www.gsma.com/"
+        f"?s={quote_plus(code_clean)}"
     )
 
     return ResolvedSource(
@@ -347,11 +387,16 @@ def _resolve_gsma(ref: Reference) -> ResolvedSource:
             if pdf_link
             else DocStatus.BLOCKED
         ),
-        source_url=pdf_link,
+        source_url=(
+            pdf_link
+            or landing_url
+        ),
     )
 
 
-def _resolve_atis(ref: Reference) -> ResolvedSource:
+def _resolve_atis(
+    ref: Reference,
+) -> ResolvedSource:
     code_clean = (
         ref.code
         .replace("ATIS-", "")
@@ -360,7 +405,13 @@ def _resolve_atis(ref: Reference) -> ResolvedSource:
     )
 
     pdf_link = _search_google_pdf(
-        f"site:atis.org {code_clean} filetype:pdf"
+        "site:atis.org "
+        f"{code_clean} filetype:pdf"
+    )
+
+    landing_url = (
+        "https://atis.org/"
+        f"?s={quote_plus(code_clean)}"
     )
 
     return ResolvedSource(
@@ -370,7 +421,10 @@ def _resolve_atis(ref: Reference) -> ResolvedSource:
             if pdf_link
             else DocStatus.BLOCKED
         ),
-        source_url=pdf_link,
+        source_url=(
+            pdf_link
+            or landing_url
+        ),
     )
 
 
