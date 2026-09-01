@@ -443,6 +443,33 @@ def ingest_document(
     # Aynı sürüm tekrar işleniyorsa yalnızca
     # o sürümün eski türetilmiş kayıtlarını
     # temizler. Diğer belgeler korunur.
+    crawl_jobs_exists = (
+        catalog.connection.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE
+                type = 'table'
+                AND name = 'crawl_jobs'
+            """
+        ).fetchone()
+        is not None
+    )
+
+    if crawl_jobs_exists:
+        catalog.connection.execute(
+            """
+            UPDATE crawl_jobs
+            SET discovered_from_edge_id = NULL
+            WHERE discovered_from_edge_id IN (
+                SELECT id
+                FROM reference_edges
+                WHERE source_version_id = ?
+            )
+            """,
+            (version_id,),
+        )
+
     catalog.connection.execute(
         """
         DELETE FROM reference_edges
