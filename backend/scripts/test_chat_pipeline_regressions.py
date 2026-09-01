@@ -89,6 +89,7 @@ def _chunk(
     text: str,
     *,
     code: str,
+    org: str = "3GPP",
     clause: str = "1",
     clause_title: str = "Scope",
     source_url: str = "https://example.test/spec.zip",
@@ -97,7 +98,7 @@ def _chunk(
         "chunk_id": f"{code}-{clause}-{abs(hash(text))}",
         "text": text,
         "metadata": {
-            "org": "3GPP",
+            "org": org,
             "code": code,
             "version": "V1.0.0",
             "clause": clause,
@@ -187,6 +188,97 @@ class ChatPipelineRegressionTests(unittest.TestCase):
         )
         self.assertEqual(len(ollama_calls), 1)
         self.assertEqual(response["sources"][0]["code"], "TS 23.502")
+
+    def test_explicit_rfc_is_sent_to_chroma_as_metadata_filter(self):
+        service = self.chat_service
+
+        correct = _chunk(
+            (
+                "A single HTTP/2 connection can contain "
+                "multiple concurrent streams."
+            ),
+            org="IETF",
+            code="9113",
+            clause="5",
+            clause_title="Streams and Multiplexing",
+            source_url=(
+                "https://www.rfc-editor.org/"
+                "rfc/rfc9113.html"
+            ),
+        )
+
+        fake_retriever = _FakeRetriever(
+            [correct]
+        )
+
+        ollama_calls = []
+
+        def fake_ollama(
+            system_prompt,
+            user_prompt,
+        ):
+            ollama_calls.append(
+                user_prompt
+            )
+            return (
+                "HTTP/2 multiplexes multiple "
+                "streams over one connection."
+            )
+
+        with (
+            patch.object(
+                service,
+                "retriever",
+                fake_retriever,
+            ),
+            patch.object(
+                service,
+                "reranker",
+                _FakeReranker(),
+            ),
+            patch.object(
+                service,
+                "_compose_and_render",
+                self._low_confidence_composer,
+            ),
+            patch.object(
+                service,
+                "generate_with_ollama",
+                fake_ollama,
+            ),
+        ):
+            response = service.generate_reply(
+                (
+                    "According to IETF RFC 9113, "
+                    "how are HTTP/2 streams "
+                    "multiplexed?"
+                )
+            )
+
+        self.assertEqual(
+            fake_retriever.calls[0]["where"],
+            {
+                "$and": [
+                    {"org": "IETF"},
+                    {"code": "9113"},
+                ]
+            },
+        )
+
+        self.assertEqual(
+            len(ollama_calls),
+            1,
+        )
+
+        self.assertEqual(
+            response["sources"][0]["org"],
+            "IETF",
+        )
+
+        self.assertEqual(
+            response["sources"][0]["code"],
+            "9113",
+        )
 
     def test_n1_content_question_cannot_return_one_word_fast_path(self):
         service = self.chat_service
