@@ -12,6 +12,7 @@ from v3_crawl_queue import V3CrawlQueue
 from v3_fetcher import fetch_document
 from v3_ingestor import (
     V3DocumentInput,
+    V3IngestResult,
     ingest_document,
 )
 
@@ -23,6 +24,16 @@ class WorkerSummary:
     blocked: int
     unresolved: int
     failed_or_requeued: int
+
+
+def _require_indexable_result(
+    result: V3IngestResult,
+) -> None:
+    if result.chunk_count <= 0:
+        raise ValueError(
+            "Belge aranabilir icerik "
+            "chunk'i uretmedi."
+        )
 
 
 def run_worker(
@@ -202,6 +213,10 @@ def run_worker(
                             fetched.page_texts
                         ),
                     ),
+                )
+
+                _require_indexable_result(
+                    result
                 )
 
                 child_edges = (

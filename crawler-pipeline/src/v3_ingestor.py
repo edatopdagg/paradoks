@@ -64,13 +64,110 @@ def _content_needles(text: str) -> list[str]:
     return useful
 
 
+def _prepare_ietf_document_text(
+    document_text: str,
+) -> str:
+    """
+    Modern RFC HTML metinlerinde madde numaras?
+    ve ba?l?k ayr? sat?rlarda bulunabilir:
+
+        1.
+        Introduction
+
+    Chunker'?n bekledi?i tek sat?rl? ba?l??a
+    d?n??t?r?r:
+
+        1. Introduction
+    """
+
+    lines = (
+        document_text
+        or ""
+    ).splitlines()
+
+    prepared_lines: list[str] = []
+    index = 0
+
+    section_number = re.compile(
+        r"^\s*"
+        r"(?P<number>"
+        r"\d+(?:\.\d+)*"
+        r")"
+        r"\.\s*$"
+    )
+
+    while index < len(lines):
+        current_line = lines[index]
+        current_clean = (
+            current_line.strip()
+        )
+
+        match = section_number.fullmatch(
+            current_clean
+        )
+
+        if (
+            match is not None
+            and index + 1 < len(lines)
+        ):
+            title_line = (
+                lines[index + 1]
+                .strip()
+            )
+
+            title_is_usable = (
+                bool(title_line)
+                and title_line
+                not in {
+                    "?",
+                    "?",
+                }
+                and len(title_line) <= 240
+                and not re.fullmatch(
+                    r"\d+(?:\.\d+)*\.?",
+                    title_line,
+                )
+                and not title_line.startswith(
+                    (
+                        "http://",
+                        "https://",
+                    )
+                )
+            )
+
+            if title_is_usable:
+                prepared_lines.append(
+                    f"{match.group('number')} "
+                    f"{title_line}"
+                )
+                index += 2
+                continue
+
+        prepared_lines.append(
+            current_line
+        )
+        index += 1
+
+    return "\n".join(
+        prepared_lines
+    )
+
+
 def _prepare_document_text(
     org: str,
     document_text: str,
 ) -> str:
-    if (
-        org or ""
-    ).strip().upper() != "ETSI":
+    normalized_org = (
+        org
+        or ""
+    ).strip().upper()
+
+    if normalized_org == "IETF":
+        return _prepare_ietf_document_text(
+            document_text
+        )
+
+    if normalized_org != "ETSI":
         return document_text
 
     cleaned_lines: list[str] = []
