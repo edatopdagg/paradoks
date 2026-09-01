@@ -1,5 +1,13 @@
-import type { Source } from "../services/chatApi"
+import {
+  useState,
+} from "react"
+
+import type {
+  Source,
+} from "../services/chatApi"
+
 import SourceCard from "./SourceCard"
+import SourceClauseViewer from "./SourceClauseViewer"
 
 type SourcesPanelProps = {
   sources: Source[]
@@ -10,6 +18,11 @@ function SourcesPanel({
   sources,
   onClose,
 }: SourcesPanelProps) {
+  const [
+    selectedSource,
+    setSelectedSource,
+  ] = useState<Source | null>(null)
+
   const uniqueSources = Array.from(
     new Map(
       sources.map((source) => [
@@ -18,6 +31,8 @@ function SourcesPanel({
           source.code,
           source.version,
           source.clause,
+          source.version_id,
+          source.clause_id,
           source.source_url,
         ].join("|"),
         source,
@@ -30,50 +45,66 @@ function SourcesPanel({
       <button
         type="button"
         className="sources-panel-backdrop"
-        aria-label="Kaynak panelini kapat"
+        aria-label={
+          "Kaynak panelini kapat"
+        }
         onClick={onClose}
       />
 
       <aside
         id="sources-panel"
         className="sources-panel"
-        aria-label="Sohbette kullanılan kaynaklar"
+        aria-label={
+          "Sohbette kullan\u0131lan kaynaklar"
+        }
       >
         <header className="sources-panel-header">
           <div>
-            <h2>Sohbet kaynakları</h2>
+            <h2>
+              {selectedSource
+                ? "Kaynak maddesi"
+                : "Sohbet kaynaklar\u0131"}
+            </h2>
 
             <p>
-              Bu konuşmada yanıtlara dayanak olarak
-              kullanılan dokümanlar.
+              {selectedSource
+                ? "Yan\u0131t\u0131n dayand\u0131\u011f\u0131 kesin standart maddesi."
+                : "Bu konu\u015fmada yan\u0131tlara dayanak olarak kullan\u0131lan dok\u00fcmanlar."}
             </p>
           </div>
 
           <button
             type="button"
             className="sources-panel-close"
-            aria-label="Kaynak panelini kapat"
+            aria-label={
+              "Kaynak panelini kapat"
+            }
             onClick={onClose}
           >
-            ×
+            {"\u00d7"}
           </button>
         </header>
 
         <div className="sources-panel-content">
-          {uniqueSources.length === 0 ? (
+          {selectedSource ? (
+            <SourceClauseViewer
+              source={selectedSource}
+              onBack={() =>
+                setSelectedSource(null)
+              }
+            />
+          ) : uniqueSources.length === 0 ? (
             <div className="sources-empty-state">
               <div className="sources-empty-icon">
                 P
               </div>
 
               <h3>
-                Henüz kaynak bulunmuyor
+                {"Hen\u00fcz kaynak bulunmuyor"}
               </h3>
 
               <p>
-                Backend bir yanıtta kaynak
-                döndürdüğünde ilgili standartlar
-                burada listelenecek.
+                {"Backend bir yan\u0131tta kaynak d\u00f6nd\u00fcrd\u00fc\u011f\u00fcnde ilgili standartlar burada listelenecek."}
               </p>
             </div>
           ) : (
@@ -86,9 +117,14 @@ function SourcesPanel({
                       source.code,
                       source.version,
                       source.clause,
+                      source.version_id,
+                      source.clause_id,
                       source.source_url,
                     ].join("|")}
                     source={source}
+                    onViewClause={
+                      setSelectedSource
+                    }
                   />
                 ),
               )}

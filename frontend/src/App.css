@@ -1086,3 +1086,124 @@
     display: none;
   }
 }
+
+/* Exact source clause viewer */
+
+.source-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-top: 0.9rem;
+}
+
+.exact-source-button {
+  appearance: none;
+  border: 1px solid rgba(76, 95, 215, 0.28);
+  border-radius: 0.7rem;
+  background: rgba(76, 95, 215, 0.1);
+  color: #3446b8;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 0.65rem 0.85rem;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    transform 160ms ease;
+}
+
+.exact-source-button:hover {
+  background: rgba(76, 95, 215, 0.17);
+  border-color: rgba(76, 95, 215, 0.45);
+  transform: translateY(-1px);
+}
+
+.source-clause-viewer {
+  display: grid;
+  gap: 1rem;
+}
+
+.source-clause-back {
+  width: fit-content;
+  border: 0;
+  background: transparent;
+  color: #4052c7;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  padding: 0.25rem 0;
+}
+
+.source-clause-message,
+.source-clause-error {
+  border-radius: 0.85rem;
+  padding: 1rem;
+}
+
+.source-clause-message {
+  background: rgba(76, 95, 215, 0.08);
+  color: #45506c;
+}
+
+.source-clause-error {
+  border: 1px solid rgba(190, 56, 56, 0.24);
+  background: rgba(190, 56, 56, 0.07);
+  color: #7d2929;
+}
+
+.source-clause-error p {
+  margin: 0.45rem 0 0.75rem;
+}
+
+.source-clause-document {
+  display: grid;
+  gap: 1rem;
+}
+
+.source-clause-document header {
+  border-bottom: 1px solid rgba(40, 49, 76, 0.12);
+  padding-bottom: 1rem;
+}
+
+.source-clause-identity {
+  color: #4052c7;
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.source-clause-document h3 {
+  color: #20263a;
+  font-size: 1.15rem;
+  line-height: 1.4;
+  margin: 0.45rem 0 0;
+}
+
+.source-clause-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.9rem;
+  color: #69708a;
+  font-size: 0.82rem;
+  margin-top: 0.65rem;
+}
+
+.source-clause-body {
+  color: #30364a;
+  font-size: 0.92rem;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.source-clause-document footer {
+  border-top: 1px solid rgba(40, 49, 76, 0.12);
+  padding-top: 1rem;
+}
+
+.source-clause-document footer a,
+.source-clause-error a {
+  color: #4052c7;
+  font-weight: 700;
+}

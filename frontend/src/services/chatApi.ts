@@ -7,6 +7,44 @@ export type Source = {
   status: string
   source_url: string
   distance: number
+
+  source_id?: string
+  document_id?: string
+  version_id?: string
+  clause_id?: string
+
+  page_number?: number | null
+  page_start?: number | null
+  page_end?: number | null
+
+  viewer_url?: string
+  local_path?: string
+  highlight_text?: string
+
+  char_start?: number | null
+  char_end?: number | null
+}
+
+export type SourceClause = {
+  document_id: string
+  version_id: string
+  clause_id: string
+
+  org: string
+  code: string
+  title?: string
+  version: string
+  release?: string
+
+  clause: string
+  clause_title: string
+  body_text: string
+
+  page_start?: number | null
+  page_end?: number | null
+
+  source_url: string
+  local_path: string
 }
 
 export type BlockedSource = {
@@ -64,6 +102,45 @@ export async function sendChatMessage(
     await response.json()
   ) as ChatResponse
 }
+
+
+export async function fetchSourceClause(
+  versionId: string,
+  clauseId: string,
+  signal?: AbortSignal,
+): Promise<SourceClause> {
+  const encodedVersionId = encodeURIComponent(
+    versionId,
+  )
+  const encodedClauseId = encodeURIComponent(
+    clauseId,
+  )
+
+  const response = await fetch(
+    `${API_BASE_URL}/sources/${encodedVersionId}/clauses/${encodedClauseId}`,
+    {
+      method: "GET",
+      signal,
+    },
+  )
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error(
+        "Kaynak maddesi katalogda bulunamadi.",
+      )
+    }
+
+    throw new Error(
+      `Kaynak maddesi alinamadi. HTTP durum kodu: ${response.status}`,
+    )
+  }
+
+  return (
+    await response.json()
+  ) as SourceClause
+}
+
 
 export async function checkApiHealth(): Promise<boolean> {
   try {
