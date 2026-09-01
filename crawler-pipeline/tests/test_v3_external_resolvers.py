@@ -38,19 +38,39 @@ class ItuResolverTests(
         get_mock,
         links_mock,
     ):
-        get_mock.return_value = object()
+        landing_response = object()
+        version_response = object()
 
-        links_mock.return_value = [
-            (
-                "dologin_pub.asp?id="
-                "T-REC-X.210-199311-I"
-                "!!PDF-S&type=items"
-            ),
-            (
-                "dologin_pub.asp?id="
-                "T-REC-X.210-199311-I"
-                "!!PDF-E&type=items"
-            ),
+        get_mock.side_effect = [
+            landing_response,
+            version_response,
+        ]
+
+        links_mock.side_effect = [
+            [
+                (
+                    "./recommendation.asp?"
+                    "lang=en&parent="
+                    "T-REC-X.210-198811-S"
+                ),
+                (
+                    "./recommendation.asp?"
+                    "lang=en&parent="
+                    "T-REC-X.210-199311-I"
+                ),
+            ],
+            [
+                (
+                    "dologin_pub.asp?id="
+                    "T-REC-X.210-199311-I"
+                    "!!PDF-S&type=items"
+                ),
+                (
+                    "dologin_pub.asp?id="
+                    "T-REC-X.210-199311-I"
+                    "!!PDF-E&type=items"
+                ),
+            ],
         ]
 
         resolved = _resolve_itu(
@@ -69,6 +89,22 @@ class ItuResolverTests(
             "PDF-E",
             resolved.source_url,
         )
+
+        self.assertIn(
+            "199311-I",
+            resolved.source_url,
+        )
+
+        second_request_url = (
+            get_mock.call_args_list[1]
+            .args[0]
+        )
+
+        self.assertIn(
+            "T-REC-X.210-199311-I",
+            second_request_url,
+        )
+
 
     @patch(
         "resolver._links",

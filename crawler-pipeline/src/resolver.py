@@ -282,19 +282,85 @@ def _resolve_itu(
         f"T-REC-{code_clean}/en"
     )
 
-    resp = _get(landing_url)
+    response = _get(
+        landing_url
+    )
 
-    if not resp:
+    if not response:
         return ResolvedSource(
             reference=ref,
             status=DocStatus.UNRESOLVED,
             source_url=landing_url,
         )
 
-    links = _links(resp)
+    links = _links(
+        response
+    )
 
-    # ITU'nun ?cretsiz ?ngilizce PDF ba?lant?lar?
-    # .pdf ile bitmez; PDF-E sorgusu i?erir.
+    version_pattern = re.compile(
+        (
+            r"parent=T-REC-"
+            rf"{re.escape(code_clean)}"
+            r"-(?P<date>\d{6})-"
+            r"(?P<status>[A-Z])"
+        ),
+        flags=re.IGNORECASE,
+    )
+
+    version_candidates: list[
+        tuple[str, str, str]
+    ] = []
+
+    for link in links:
+        match = version_pattern.search(
+            link
+        )
+
+        if match is None:
+            continue
+
+        if "lang=en" not in link.casefold():
+            continue
+
+        version_candidates.append(
+            (
+                match.group("date"),
+                match.group("status"),
+                link,
+            )
+        )
+
+    source_page_url = landing_url
+
+    if version_candidates:
+        latest_version_link = max(
+            version_candidates,
+            key=lambda item: (
+                item[0],
+                item[1].casefold() == "i",
+            ),
+        )[2]
+
+        source_page_url = urljoin(
+            landing_url,
+            latest_version_link,
+        )
+
+        version_response = _get(
+            source_page_url
+        )
+
+        if not version_response:
+            return ResolvedSource(
+                reference=ref,
+                status=DocStatus.UNRESOLVED,
+                source_url=source_page_url,
+            )
+
+        links = _links(
+            version_response
+        )
+
     pdf_link = next(
         (
             link
@@ -326,7 +392,7 @@ def _resolve_itu(
             reference=ref,
             status=DocStatus.PENDING,
             source_url=urljoin(
-                landing_url,
+                source_page_url,
                 pdf_link,
             ),
         )
@@ -334,7 +400,7 @@ def _resolve_itu(
     return ResolvedSource(
         reference=ref,
         status=DocStatus.BLOCKED,
-        source_url=landing_url,
+        source_url=source_page_url,
     )
 
 
