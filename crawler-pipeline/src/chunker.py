@@ -2751,8 +2751,17 @@ def split_into_clauses(
 
     if org == "IETF":
 
-        return (
+        ietf_clauses = (
             _split_ietf_clauses(
+                document_text
+            )
+        )
+
+        if ietf_clauses:
+            return ietf_clauses
+
+        return (
+            _split_generic_clauses(
                 document_text
             )
         )
