@@ -7,12 +7,47 @@ def normalize(value: str) -> str:
     return " ".join((value or "").split()).casefold()
 
 
+def filter_rows(
+    rows,
+    *,
+    org: str | None = None,
+    code: str | None = None,
+):
+    org_key = normalize(
+        org or ""
+    )
+    code_key = normalize(
+        code or ""
+    )
+
+    return [
+        row
+        for row in rows
+        if (
+            not org_key
+            or normalize(
+                row["org"]
+            )
+            == org_key
+        )
+        and (
+            not code_key
+            or normalize(
+                row["code"]
+            )
+            == code_key
+        )
+    ]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--catalog", required=True)
     parser.add_argument("--output-db", required=True)
     parser.add_argument("--collection", default="telecom_standards_v3")
     parser.add_argument("--smoke-query", required=True)
+    parser.add_argument("--org")
+    parser.add_argument("--code")
     args = parser.parse_args()
 
     import chromadb
@@ -53,6 +88,12 @@ def main() -> None:
     ).fetchall()
     connection.close()
 
+    rows = filter_rows(
+        rows,
+        org=args.org,
+        code=args.code,
+    )
+
     content_rows = [
         row
         for row in rows
@@ -63,6 +104,8 @@ def main() -> None:
 
     print("Catalog:", catalog_path)
     print("Vector DB:", output_db)
+    print("Filter org:", args.org or "ALL")
+    print("Filter code:", args.code or "ALL")
     print("Catalog chunk:", len(rows))
     print("Skipped heading-only:", skipped)
     print("Content chunk:", len(content_rows))
