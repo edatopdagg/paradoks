@@ -26,9 +26,19 @@ class Source(BaseModel):
 
     source_id: str = ""
     document_id: str = ""
+    version_id: str = ""
+    clause_id: str = ""
+
     page_number: int | None = None
+    page_start: int | None = None
+    page_end: int | None = None
+
     viewer_url: str = ""
+    local_path: str = ""
     highlight_text: str = ""
+
+    char_start: int | None = None
+    char_end: int | None = None
 
 
 class BlockedSource(BaseModel):

@@ -194,6 +194,23 @@ def _build_sources(
         clause = str(metadata.get("clause", "Bilinmiyor") or "Bilinmiyor")
         source_url = str(metadata.get("source_url", "") or "")
 
+        page_start_value = metadata.get("page_start")
+        page_end_value = metadata.get("page_end")
+
+        page_start = (
+            page_start_value
+            if isinstance(page_start_value, int)
+            and page_start_value >= 0
+            else None
+        )
+
+        page_end = (
+            page_end_value
+            if isinstance(page_end_value, int)
+            and page_end_value >= 0
+            else None
+        )
+
         if source_url:
             key = ("url", source_url.casefold(), clause.casefold())
         else:
@@ -213,6 +230,48 @@ def _build_sources(
                 "status": metadata.get("status", "Bilinmiyor"),
                 "source_url": source_url,
                 "distance": result.get("distance", 0.0),
+
+                "source_id": str(
+                    metadata.get("source_id", "")
+                    or result.get("id", "")
+                    or ""
+                ),
+                "document_id": str(
+                    metadata.get("document_id", "")
+                    or ""
+                ),
+                "version_id": str(
+                    metadata.get("version_id", "")
+                    or ""
+                ),
+                "clause_id": str(
+                    metadata.get("clause_id", "")
+                    or ""
+                ),
+
+                "page_number": page_start,
+                "page_start": page_start,
+                "page_end": page_end,
+
+                "viewer_url": str(
+                    metadata.get("viewer_url", "")
+                    or ""
+                ),
+                "local_path": str(
+                    metadata.get("local_path", "")
+                    or ""
+                ),
+                "highlight_text": str(
+                    result.get("text", "")
+                    or ""
+                ),
+
+                "char_start": metadata.get(
+                    "char_start"
+                ),
+                "char_end": metadata.get(
+                    "char_end"
+                ),
             }
         )
 
@@ -243,8 +302,6 @@ def _can_use_fast_path(
     reply = str(rendered.get("reply", "") or "").strip()
 
     # Eğer standart/doküman veya referans noktası gibi yüksek güvenli bir tespit varsa doğrudan izin ver
-    if confidence == "high" and renderer_success and bool(reply):
-        return True
 
     return (
         answer_type in FAST_PATH_TYPES
@@ -343,8 +400,62 @@ def _reference_point_fts_queries(
     )
 
     if explicit_reference_point:
-        reference_point = explicit_reference_point.group(1).upper()
-        return [f'"{reference_point}" AND "reference point"']
+        reference_point = (
+            explicit_reference_point
+            .group(1)
+            .upper()
+        )
+
+        upper_question = (
+            question
+            or ""
+        ).upper()
+
+        technical_tokens = [
+            token
+            for token in (
+                "NAS",
+                "UE",
+                "AMF",
+                "SMF",
+                "UPF",
+                "AUSF",
+                "UDM",
+                "PCF",
+                "NSSF",
+                "NRF",
+            )
+            if re.search(
+                rf"\b{re.escape(token)}\b",
+                upper_question,
+            )
+        ]
+
+        if (
+            reference_point == "N1"
+            and "NAS" not in technical_tokens
+        ):
+            technical_tokens.insert(
+                0,
+                "NAS",
+            )
+
+        query_terms = [
+            reference_point,
+            *technical_tokens,
+        ]
+
+        if len(query_terms) == 1:
+            query_terms.append(
+                "reference point"
+            )
+
+        return [
+            " AND ".join(
+                f'"{term}"'
+                for term in query_terms
+            )
+        ]
 
     stop_tokens = {
         "5G", "5GS", "TS", "TR", "RFC", "REFERENCE", "POINT", "INTERFACE", 
