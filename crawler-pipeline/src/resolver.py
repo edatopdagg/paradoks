@@ -120,7 +120,13 @@ def _resolve_3gpp(ref: Reference) -> ResolvedSource:
         reference=ref,
         status=DocStatus.PENDING,
         source_url=file_url,
-        version=latest,
+        version=(
+            _three_gpp_archive_filename(
+                latest,
+                expected_number,
+            )
+            or ""
+        ),
     )
 
 
