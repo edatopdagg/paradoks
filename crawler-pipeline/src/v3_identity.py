@@ -28,14 +28,27 @@ def _base36_character(value: str) -> int:
 def _infer_3gpp(code: str, source_url: str) -> VersionIdentity:
     filename = _source_filename(source_url)
     match = re.fullmatch(
-        r"(?P<number>\d{5})-(?P<version>[0-9a-zA-Z]{3})\.zip",
+        r"(?P<number>\d{5}(?:-\d+)?)-(?P<version>[0-9a-zA-Z]{3})\.zip",
         filename,
         flags=re.IGNORECASE,
     )
     if not match:
         raise ValueError(f"3GPP arşiv adı çözülemedi: {filename}")
 
-    expected_number = "".join(re.findall(r"\d", code))
+    code_number = (
+        " ".join(
+            (code or "").split()
+        ).rsplit(
+            " ",
+            1,
+        )[-1]
+    )
+
+    # 23.041   -> 23041
+    # 38.101-1 -> 38101-1
+    expected_number = (
+        code_number.replace(".", "")
+    )
     if expected_number and expected_number != match.group("number"):
         raise ValueError(
             "3GPP belge kodu ile arşiv adı eşleşmiyor: "

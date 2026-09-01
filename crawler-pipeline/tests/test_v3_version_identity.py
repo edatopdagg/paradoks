@@ -61,6 +61,49 @@ class V3VersionIdentityTests(unittest.TestCase):
             "20.1.0",
         )
 
+
+    def test_reads_multipart_3gpp_version(
+        self,
+    ) -> None:
+        identity = infer_version_identity(
+            org="3GPP",
+            code="TS 38.101-1",
+            source_url=(
+                "https://www.3gpp.org/ftp/"
+                "Specs/archive/38_series/"
+                "38.101-1/38101-1-k00.zip"
+            ),
+        )
+
+        self.assertEqual(
+            identity.version,
+            "20.0.0",
+        )
+        self.assertEqual(
+            identity.release,
+            "20",
+        )
+        self.assertEqual(
+            identity.source_filename,
+            "38101-1-k00.zip",
+        )
+
+    def test_rejects_wrong_multipart_archive(
+        self,
+    ) -> None:
+        with self.assertRaises(
+            ValueError
+        ):
+            infer_version_identity(
+                org="3GPP",
+                code="TS 38.101-1",
+                source_url=(
+                    "https://www.3gpp.org/ftp/"
+                    "Specs/archive/38_series/"
+                    "38.101-2/38101-2-k00.zip"
+                ),
+            )
+
     def test_reads_etsi_version(self) -> None:
         identity = infer_version_identity(
             org="ETSI",
