@@ -368,7 +368,8 @@ def _validate_identity(
     if organization == "3GPP":
         match = re.search(
             (
-                r"3GPP\s+(TS|TR)\s+"
+                r"(?m)^\s*(?:(?:3GPP|3G)\s+)?"
+                r"(TS|TR)\s+"
                 r"(\d{2}\.\d{3})\s+"
                 r"V(\d+\.\d+\.\d+)"
             ),

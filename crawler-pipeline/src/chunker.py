@@ -2768,9 +2768,51 @@ def split_into_clauses(
 
     if org == "3GPP":
 
-        return (
+        three_gpp_clauses = (
             _split_3gpp_clauses(
                 document_text
+            )
+        )
+
+        if three_gpp_clauses:
+            return three_gpp_clauses
+
+        lines = (
+            document_text.splitlines()
+        )
+
+        scope_starts = [
+            index
+            for index, line in enumerate(
+                lines
+            )
+            if re.fullmatch(
+                r"\s*1\s+Scope\s*",
+                line,
+                flags=re.IGNORECASE,
+            )
+        ]
+
+        if scope_starts:
+            fallback_lines = lines[
+                scope_starts[-1]:
+            ]
+
+            fallback_lines[0] = (
+                "1 Scope"
+            )
+
+            fallback_text = "\n".join(
+                fallback_lines
+            )
+        else:
+            fallback_text = (
+                document_text
+            )
+
+        return (
+            _split_generic_clauses(
+                fallback_text
             )
         )
 
@@ -3109,4 +3151,3 @@ def build_chunks(
             )
 
     return chunks
-
