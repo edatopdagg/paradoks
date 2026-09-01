@@ -90,6 +90,40 @@ class ThreeGppIdentityHeaderTests(
             ),
         )
 
+
+    def test_accepts_multipart_3gpp_header(
+        self,
+    ):
+        _validate_identity(
+            org="3GPP",
+            code="TS 38.101-1",
+            identity=self.identity(
+                "19.3.0"
+            ),
+            document_text=(
+                "3GPP TS 38.101-1 "
+                "V19.3.0 (2026-03)"
+            ),
+        )
+
+    def test_rejects_wrong_multipart_part(
+        self,
+    ):
+        with self.assertRaises(
+            ValueError
+        ):
+            _validate_identity(
+                org="3GPP",
+                code="TS 38.101-1",
+                identity=self.identity(
+                    "19.3.0"
+                ),
+                document_text=(
+                    "3GPP TS 38.101-2 "
+                    "V19.3.0 (2026-03)"
+                ),
+            )
+
     def test_still_rejects_wrong_document_code(
         self,
     ):

@@ -20,7 +20,7 @@ from typing import Optional
 from models import Reference
 
 PATTERNS: dict[str, re.Pattern] = {
-    "3GPP":  re.compile(r"3GPP\s+(TS|TR)\s*(\d{2}\.\d{3})(?:\s+Version\s+[\d.]+)?", re.IGNORECASE),
+    "3GPP":  re.compile(r"3GPP\s+(TS|TR)\s*(\d{2}\.\d{3}(?:-\d+)?)(?:\s+Version\s+[\d.]+)?", re.IGNORECASE),
     "ETSI":  re.compile(r"ETSI\s+(TS|EN|TR)\s*(\d{3}\s?\d{3})", re.IGNORECASE),
     "IETF":  re.compile(r"(?:IETF\s+)?RFC\s*(\d{3,5})", re.IGNORECASE),
     "ITU-T": re.compile(r"ITU-T\s+Rec(?:ommendation)?\.?\s*([A-Z]\.\d+)", re.IGNORECASE),

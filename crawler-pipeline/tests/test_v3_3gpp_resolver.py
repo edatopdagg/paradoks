@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 from unittest.mock import patch
 
 from models import (
@@ -162,6 +162,54 @@ class ThreeGppResolverTests(
             resolved.source_url.endswith(
                 "/25.925/"
             )
+        )
+
+
+    @patch(
+        "resolver._links"
+    )
+    @patch(
+        "resolver._get"
+    )
+    def test_resolves_multipart_spec_folder(
+        self,
+        get_mock,
+        links_mock,
+    ):
+        get_mock.return_value = object()
+
+        links_mock.return_value = [
+            "38101-1-j20.zip",
+            "38101-1-j30.zip",
+            "38101-2-j30.zip",
+        ]
+
+        resolved = _resolve_3gpp(
+            make_reference(
+                "TS 38.101-1"
+            )
+        )
+
+        get_mock.assert_called_once_with(
+            "https://www.3gpp.org/ftp/"
+            "Specs/archive/38_series/"
+            "38.101-1/"
+        )
+
+        self.assertEqual(
+            resolved.status,
+            DocStatus.PENDING,
+        )
+
+        self.assertTrue(
+            resolved.source_url.endswith(
+                "/38101-1-j30.zip"
+            )
+        )
+
+        self.assertEqual(
+            resolved.version,
+            "38101-1-j30.zip",
         )
 
 

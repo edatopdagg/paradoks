@@ -370,7 +370,7 @@ def _validate_identity(
             (
                 r"(?m)^\s*(?:(?:3GPP|3G)\s+)?"
                 r"(TS|TR)\s+"
-                r"(\d{2}\.\d{3})\s+"
+                r"(\d{2}\.\d{3}(?:-\d+)?)\s+"
                 r"V(\d+\.\d+\.\d+)"
             ),
             head,

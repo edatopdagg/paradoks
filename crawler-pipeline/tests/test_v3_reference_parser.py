@@ -141,5 +141,37 @@ class ThreeGppReferenceParserTests(unittest.TestCase):
         )
 
 
+    def test_keeps_multipart_3gpp_suffixes(
+        self,
+    ) -> None:
+        text = """
+[1] 3GPP TS 38.101-1: "Part 1: Range 1 Standalone".
+[2] 3GPP TS 38.101-2: "Part 2: Range 2 Standalone".
+[3] 3GPP TS 38.101-5: "Part 5: Satellite access".
+"""
+
+        references = parse_v3_references(
+            org="3GPP",
+            document_text=text,
+        )
+
+        self.assertEqual(
+            [
+                reference.code
+                for reference in references
+            ],
+            [
+                "TS 38.101-1",
+                "TS 38.101-2",
+                "TS 38.101-5",
+            ],
+        )
+
+        self.assertEqual(
+            len(references),
+            3,
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

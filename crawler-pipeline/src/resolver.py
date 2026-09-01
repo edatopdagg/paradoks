@@ -74,11 +74,11 @@ def _resolve_3gpp(ref: Reference) -> ResolvedSource:
     if not resp:
         return ResolvedSource(reference=ref, status=DocStatus.UNRESOLVED)
 
-    expected_number = "".join(
-        re.findall(
-            r"\d",
-            parts[1],
-        )
+    # Noktayi kaldirirken multipart ekini korur.
+    # 23.041   -> 23041
+    # 38.101-1 -> 38101-1
+    expected_number = (
+        parts[1].replace(".", "")
     )
 
     # Yaln?zca yay?mlanm?? standart s?r?m paketlerini kabul et.
