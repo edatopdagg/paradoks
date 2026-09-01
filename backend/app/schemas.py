@@ -63,3 +63,26 @@ class ChatResponse(BaseModel):
 
     standard_answer: str = ""
     assistant_answer: str = ""
+
+
+class SourceClauseResponse(BaseModel):
+    document_id: str
+    version_id: str
+    clause_id: str
+
+    org: str
+    code: str
+    document_title: str
+
+    version: str
+    release: str
+
+    clause: str
+    clause_title: str
+    body_text: str
+
+    page_start: int | None = None
+    page_end: int | None = None
+
+    source_url: str
+    local_path: str

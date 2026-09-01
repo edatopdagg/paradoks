@@ -1,9 +1,16 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.schemas import ChatRequest, ChatResponse
+from app.schemas import (
+    ChatRequest,
+    ChatResponse,
+    SourceClauseResponse,
+)
 from app.services.chat_orchestrator import (
     generate_chat_response,
+)
+from app.services.source_service import (
+    get_source_clause,
 )
 
 
@@ -66,5 +73,44 @@ def chat(
 )
 
     return ChatResponse(
+        **result
+    )
+
+
+# ---------------------------------------------------------
+# SOURCE CLAUSE VIEWER
+# ---------------------------------------------------------
+
+@app.get(
+    "/sources/{version_id}/clauses/{clause_id}",
+    response_model=SourceClauseResponse,
+)
+def source_clause(
+    version_id: str,
+    clause_id: str,
+) -> SourceClauseResponse:
+    try:
+        result = get_source_clause(
+            version_id=version_id,
+            clause_id=clause_id,
+        )
+
+    except FileNotFoundError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "V3 source catalog is unavailable."
+            ),
+        ) from error
+
+    except KeyError as error:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Requested source clause was not found."
+            ),
+        ) from error
+
+    return SourceClauseResponse(
         **result
     )

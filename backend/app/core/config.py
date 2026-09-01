@@ -132,3 +132,28 @@ RERANKER_MAX_LENGTH = int(
         "512",
     )
 )
+
+# ---------------------------------------------------------
+# V3 SOURCE CATALOG
+# ---------------------------------------------------------
+
+_raw_v3_catalog_path = os.getenv(
+    "V3_CATALOG_PATH",
+    "catalog.sqlite3",
+)
+
+_v3_catalog_path = Path(
+    _raw_v3_catalog_path
+)
+
+if _v3_catalog_path.is_absolute():
+    V3_CATALOG_PATH = str(
+        _v3_catalog_path
+    )
+else:
+    V3_CATALOG_PATH = str(
+        (
+            BASE_DIR
+            / _v3_catalog_path
+        ).resolve()
+    )
