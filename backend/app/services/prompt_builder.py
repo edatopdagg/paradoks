@@ -1,6 +1,10 @@
 import re
 from typing import Any
 
+from app.services.question_planner import (
+    detect_language,
+)
+
 
 SYSTEM_PROMPT = """
 Sen, verilen telekomünikasyon standardı parçalarına dayanarak
@@ -309,7 +313,7 @@ def build_context(
 # USER PROMPT
 # =========================================================
 
-def build_user_prompt(
+def _build_user_prompt_base(
     question: str,
     chunks: list[dict[str, Any]],
 ) -> str:
@@ -343,3 +347,109 @@ Genel bir teknik öğe soruluyorsa belirli bir hizmete özgü
 Soruda birden fazla istek varsa her birini cevapla;
 bir bölüm kaynaklarda yoksa bunu açıkça belirt.
 """.strip()
+
+# =========================================================
+# RESPONSE LANGUAGE
+# =========================================================
+
+_TR_SYSTEM_LANGUAGE_RULE = (
+    "- Do\u011fal ve teknik "
+    "T\u00fcrk\u00e7e kullan."
+)
+
+_TR_INSUFFICIENT_RULE = (
+    '  "Bu soruyu yan\u0131tlamak i\u00e7in '
+    'yeterli standart bilgisi bulunamad\u0131."'
+)
+
+_TR_SOURCE_ONLY_RULE = (
+    "Yaln\u0131zca bu kaynaklara dayanarak "
+    "soruyu cevapla."
+)
+
+_TR_DIRECT_ANSWER_RULE = (
+    "\u0130lk c\u00fcmlede do\u011frudan "
+    "cevab\u0131 do\u011fal "
+    "T\u00fcrk\u00e7eyle ver."
+)
+
+
+def build_system_prompt(
+    question: str,
+) -> str:
+    language = detect_language(
+        question
+    )
+
+    if language != "en":
+        return SYSTEM_PROMPT
+
+    prompt = SYSTEM_PROMPT.replace(
+        _TR_SYSTEM_LANGUAGE_RULE,
+        (
+            "- Answer entirely in natural, precise "
+            "technical English."
+        ),
+    )
+
+    prompt = prompt.replace(
+        _TR_INSUFFICIENT_RULE,
+        (
+            '  "There is not enough information '
+            'in the provided standards to answer '
+            'this question."'
+        ),
+    )
+
+    return (
+        prompt
+        + "\n"
+        + (
+            "- The user asked in English. Do not "
+            "answer in Turkish. Preserve standard "
+            "terminology exactly."
+        )
+    )
+
+
+def build_user_prompt(
+    question: str,
+    chunks: list[dict[str, Any]],
+) -> str:
+    prompt = _build_user_prompt_base(
+        question=question,
+        chunks=chunks,
+    )
+
+    language = detect_language(
+        question
+    )
+
+    if language != "en":
+        return prompt
+
+    prompt = prompt.replace(
+        _TR_SOURCE_ONLY_RULE,
+        (
+            "Answer the question using only "
+            "these sources."
+        ),
+    )
+
+    prompt = prompt.replace(
+        _TR_DIRECT_ANSWER_RULE,
+        (
+            "Give the direct answer in the first "
+            "sentence using natural technical English."
+        ),
+    )
+
+    return (
+        prompt
+        + "\n\n"
+        + (
+            "Answer entirely in English. Preserve "
+            "the exact technical meaning and do not "
+            "invent terminology."
+        )
+    )

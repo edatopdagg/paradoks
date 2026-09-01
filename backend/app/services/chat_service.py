@@ -21,7 +21,7 @@ from app.services.ollama_service import (
     generate_with_ollama,
 )
 from app.services.prompt_builder import (
-    SYSTEM_PROMPT,
+    build_system_prompt,
     build_user_prompt,
     infer_answer_type,
 )
@@ -1305,7 +1305,7 @@ def generate_reply(
     ollama_start = time.perf_counter()
     try:
         reply = generate_with_ollama(
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=build_system_prompt(message),
             user_prompt=user_prompt,
         )
         ollama_time += time.perf_counter() - ollama_start
@@ -1353,7 +1353,7 @@ def generate_reply(
         repair_start = time.perf_counter()
         try:
             repaired_reply = generate_with_ollama(
-                system_prompt=SYSTEM_PROMPT,
+                system_prompt=build_system_prompt(message),
                 user_prompt=repair_prompt,
             )
             ollama_time += time.perf_counter() - repair_start
