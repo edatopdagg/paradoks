@@ -346,6 +346,111 @@ def _ietf_sections(
             )
         )
 
+    # Bazı RFC'lerde genel "References" bölümü ile
+    # sonradan gelen "Normative References" / "Informative
+    # References" bölümleri birlikte bulunur.
+    #
+    # Örnek RFC 3309:
+    #
+    #     6
+    #     References
+    #       [RFC1700]
+    #       [RFC2026]
+    #       [RFC2119]
+    #       [RFC2960]
+    #
+    #     7.1
+    #     Informative References
+    #       [STONE]
+    #
+    # Typed section bulundu diye genel References bölümünü
+    # kaybetmemeliyiz. Generic bölümü bir sonraki typed
+    # reference heading'e kadar ayrı bir "unspecified"
+    # bibliography section olarak koruyoruz.
+    if sections:
+
+        generic_matches = list(
+            re.finditer(
+                (
+                    r"(?im)^\s*"
+                    r"(?:"
+                    r"\d+(?:\.\d+)*\.?\s*"
+                    r")?"
+                    r"\.?\s*"
+                    r"References"
+                    r"\s*$"
+                ),
+                text,
+            )
+        )
+
+        typed_matches = list(
+            re.finditer(
+                (
+                    r"(?im)^\s*"
+                    r"(?:"
+                    r"\d+(?:\.\d+)*\.?\s*"
+                    r")?"
+                    r"\.?\s*"
+                    r"(?:Normative|Informative)"
+                    r"\s+References"
+                    r"\s*$"
+                ),
+                text,
+            )
+        )
+
+        if (
+            generic_matches
+            and typed_matches
+        ):
+
+            # RFC Editor HTML render'larında TOC içinde de
+            # "References" görünebildiği için son generic
+            # heading'i esas alıyoruz.
+            generic_match = (
+                generic_matches[-1]
+            )
+
+            later_typed = [
+                match
+                for match in typed_matches
+                if (
+                    match.start()
+                    > generic_match.end()
+                )
+            ]
+
+            if later_typed:
+
+                next_typed = min(
+                    later_typed,
+                    key=lambda match: (
+                        match.start()
+                    ),
+                )
+
+                generic_section = (
+                    _trim_ietf_reference_section(
+                        text[
+                            generic_match.end():
+                            next_typed.start()
+                        ]
+                    )
+                )
+
+                if generic_section.strip():
+
+                    sections.insert(
+                        0,
+                        (
+                            "unspecified",
+                            generic_section,
+                            True,
+                        ),
+                    )
+
+
     # Bazı RFC render'larında bibliography heading
     # bulunmayabilir. Eski davranışı koruyoruz.
     #

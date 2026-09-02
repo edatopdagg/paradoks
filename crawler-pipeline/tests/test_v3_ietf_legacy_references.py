@@ -628,6 +628,94 @@ December 1989.
 
 
 
+
+class IetfGenericAndInformativeReferencesTests(
+    unittest.TestCase
+):
+
+    def test_keeps_generic_references_when_informative_section_also_exists(
+        self,
+    ):
+        text = """
+6
+References
+
+[
+RFC1700
+] Reynolds, J. and J. Postel,
+"ASSIGNED NUMBERS",
+RFC
+1700
+, October 1994.
+
+[
+RFC2026
+] Bradner, S.,
+"The Internet Standards Process -- Revision 3",
+BCP 9,
+RFC 2026,
+October 1996.
+
+[
+RFC2119
+] Bradner, S.,
+"Key words for use in RFCs to Indicate Requirement Levels",
+BCP 14,
+RFC 2119,
+March 1997.
+
+[
+RFC2960
+] Stewart, R. et al.,
+"Stream Control Transmission Protocol",
+RFC 2960,
+October 2000.
+
+7.1
+Informative References
+
+[
+STONE
+] Stone, J.,
+"Checksums in the Internet",
+Doctoral dissertation,
+August 2001.
+
+[
+Williams93
+] Williams, R.,
+"A PAINLESS GUIDE TO CRC ERROR DETECTION ALGORITHMS",
+August 1993.
+"""
+
+        references = parse_v3_references(
+            "IETF",
+            text,
+        )
+
+        self.assertEqual(
+            [
+                reference.code
+                for reference in references
+            ],
+            [
+                "1700",
+                "2026",
+                "2119",
+                "2960",
+            ],
+        )
+
+        self.assertTrue(
+            all(
+                reference.reference_kind
+                == "unspecified"
+                for reference in references
+            )
+        )
+
+
+
 if __name__ == "__main__":
     unittest.main(
         verbosity=2,
