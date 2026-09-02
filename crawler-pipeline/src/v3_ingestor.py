@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import re
 
 from chunker import build_chunks
-from v3_catalog import V3Catalog
+from v3_catalog import V3Catalog, _stable_id
 from v3_reference_parser import parse_v3_references
 
 
@@ -40,6 +40,518 @@ def _normalized(value: str) -> str:
         " ",
         value or "",
     ).strip().casefold()
+
+
+def _canonicalize_3gpp_reference(
+    catalog: V3Catalog,
+    org: str,
+    code: str,
+) -> tuple[str, str]:
+    """
+    3GPP kaynak belgelerinde TS/TR türü yanlış yazılmış
+    referansları, katalogda doğrulanmış karşı kimlik varsa
+    canonical belgeye yönlendirir.
+
+    Örnek:
+        kaynak: TR 38.101-4
+        gerçek/indexed: TS 38.101-4
+        sonuç: TS 38.101-4
+
+    Güvenlik:
+    - Yalnız 3GPP TS/TR kodlarında çalışır.
+    - Aynı numarayı korur.
+    - İstenen kimlik zaten indekslenmişse değiştirmez.
+    - Karşı tür gerçekten document_versions içeriyorsa
+      canonical kabul eder.
+    """
+
+    org_value = re.sub(
+        r"\s+",
+        " ",
+        org or "",
+    ).strip().upper()
+
+    code_value = re.sub(
+        r"\s+",
+        " ",
+        code or "",
+    ).strip().upper()
+
+    if org_value != "3GPP":
+        return org_value, code_value
+
+    match = re.fullmatch(
+        r"(TS|TR)\s+"
+        r"(\d{2}\.\d{3}(?:-\d+)?)",
+        code_value,
+    )
+
+    if match is None:
+        return org_value, code_value
+
+    # İstenen kimliğin kendisi gerçek bir sürüm içeriyorsa
+    # artık doğrulanmıştır; karşı türe çevrilmez.
+    current_verified = catalog.connection.execute(
+        """
+        SELECT 1
+        FROM documents d
+
+        JOIN document_versions dv
+          ON dv.document_id = d.id
+
+        WHERE d.org = '3GPP'
+          AND d.code = ?
+
+        LIMIT 1
+        """,
+        (code_value,),
+    ).fetchone()
+
+    if current_verified is not None:
+        return org_value, code_value
+
+    requested_type = match.group(1)
+    number = match.group(2)
+
+    opposite_type = (
+        "TR"
+        if requested_type == "TS"
+        else "TS"
+    )
+
+    opposite_code = (
+        f"{opposite_type} {number}"
+    )
+
+    # Yalnız gerçekten indekslenmiş karşı kimlik
+    # canonical kabul edilir.
+    canonical = catalog.connection.execute(
+        """
+        SELECT
+            d.code
+        FROM documents d
+
+        WHERE d.org = '3GPP'
+          AND d.code = ?
+          AND EXISTS (
+              SELECT 1
+              FROM document_versions dv
+              WHERE dv.document_id = d.id
+          )
+
+        LIMIT 1
+        """,
+        (opposite_code,),
+    ).fetchone()
+
+    if canonical is None:
+        return org_value, code_value
+
+    return (
+        "3GPP",
+        canonical["code"],
+    )
+
+
+def _repair_opposite_3gpp_alias(
+    catalog: V3Catalog,
+    *,
+    canonical_document_id: str,
+    org: str,
+    code: str,
+) -> int:
+    """
+    Gerçek 3GPP TS/TR belgesi başarıyla indekslendikten sonra,
+    aynı numarada daha önce oluşmuş doğrulanmamış karşı-tür
+    alias kaydını canonical belgeye birleştirir.
+
+    Örnek:
+        önce: TR 38.101-4 alias oluştu
+        sonra: TS 38.101-4 gerçekten indekslendi
+
+        sonuç:
+        - eski TR edge'leri TS document'a taşınır
+        - raw_text korunur
+        - deterministik canonical edge id üretilir
+        - crawl depth kaybolmaz
+        - alias crawl job silinir
+        - alias document silinir
+
+    Güvenlik:
+    - yalnız 3GPP TS/TR için çalışır
+    - numara değişmez
+    - canonical belge gerçekten version içermelidir
+    - alias'ın version'ı varsa merge yapılmaz
+    """
+
+    connection = catalog.connection
+
+    org_value = re.sub(
+        r"\s+",
+        " ",
+        org or "",
+    ).strip().upper()
+
+    code_value = re.sub(
+        r"\s+",
+        " ",
+        code or "",
+    ).strip().upper()
+
+    if org_value != "3GPP":
+        return 0
+
+    match = re.fullmatch(
+        r"(TS|TR)\s+"
+        r"(\d{2}\.\d{3}(?:-\d+)?)",
+        code_value,
+    )
+
+    if match is None:
+        return 0
+
+    # Canonical belge gerçekten indekslenmiş olmalı.
+    canonical_version = connection.execute(
+        """
+        SELECT
+            source_url
+        FROM document_versions
+        WHERE document_id = ?
+        ORDER BY
+            is_latest DESC,
+            rowid DESC
+        LIMIT 1
+        """,
+        (canonical_document_id,),
+    ).fetchone()
+
+    if canonical_version is None:
+        return 0
+
+    canonical_type = match.group(1)
+    number = match.group(2)
+
+    opposite_type = (
+        "TR"
+        if canonical_type == "TS"
+        else "TS"
+    )
+
+    alias_code = (
+        f"{opposite_type} {number}"
+    )
+
+    alias = connection.execute(
+        """
+        SELECT
+            id,
+            code
+        FROM documents
+        WHERE org = '3GPP'
+          AND code = ?
+          AND id <> ?
+        LIMIT 1
+        """,
+        (
+            alias_code,
+            canonical_document_id,
+        ),
+    ).fetchone()
+
+    if alias is None:
+        return 0
+
+    alias_document_id = alias["id"]
+
+    # Karşı tür de gerçekten indekslenmişse iki doğrulanmış
+    # belge vardır; otomatik merge yapma.
+    alias_has_version = connection.execute(
+        """
+        SELECT 1
+        FROM document_versions
+        WHERE document_id = ?
+        LIMIT 1
+        """,
+        (alias_document_id,),
+    ).fetchone()
+
+    if alias_has_version is not None:
+        return 0
+
+    crawl_jobs_exists = (
+        connection.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name = 'crawl_jobs'
+            """
+        ).fetchone()
+        is not None
+    )
+
+    alias_edges = connection.execute(
+        """
+        SELECT *
+        FROM reference_edges
+        WHERE target_document_id = ?
+        ORDER BY id
+        """,
+        (alias_document_id,),
+    ).fetchall()
+
+    repaired_edges = 0
+
+    try:
+        connection.execute(
+            "BEGIN IMMEDIATE"
+        )
+
+        # ----------------------------------------------------
+        # Alias edge'lerini canonical edge kimliğine taşı.
+        # raw_text değiştirilmez; kaynak typo'su provenance
+        # olarak aynen saklanır.
+        # ----------------------------------------------------
+
+        for edge in alias_edges:
+            canonical_edge_id = _stable_id(
+                "edge",
+                edge["source_version_id"],
+                edge["source_clause_id"] or "",
+                "3GPP",
+                code_value,
+                str(edge["ref_number"] or ""),
+            )
+
+            connection.execute(
+                """
+                INSERT INTO reference_edges(
+                    id,
+                    source_version_id,
+                    source_clause_id,
+                    target_document_id,
+                    target_org,
+                    target_code,
+                    ref_number,
+                    raw_text,
+                    reference_kind
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+
+                ON CONFLICT(id)
+                DO UPDATE SET
+                    target_document_id =
+                        excluded.target_document_id,
+                    target_org =
+                        excluded.target_org,
+                    target_code =
+                        excluded.target_code,
+                    ref_number =
+                        excluded.ref_number,
+                    raw_text =
+                        excluded.raw_text,
+                    reference_kind =
+                        excluded.reference_kind
+                """,
+                (
+                    canonical_edge_id,
+                    edge["source_version_id"],
+                    edge["source_clause_id"],
+                    canonical_document_id,
+                    "3GPP",
+                    code_value,
+                    edge["ref_number"],
+                    edge["raw_text"],
+                    edge["reference_kind"],
+                ),
+            )
+
+            # Eski edge bir crawl job'ın discovery kaynağıysa
+            # foreign key'i canonical edge'e geçir.
+            if crawl_jobs_exists:
+                connection.execute(
+                    """
+                    UPDATE crawl_jobs
+                    SET discovered_from_edge_id = ?
+                    WHERE discovered_from_edge_id = ?
+                    """,
+                    (
+                        canonical_edge_id,
+                        edge["id"],
+                    ),
+                )
+
+            if canonical_edge_id != edge["id"]:
+                connection.execute(
+                    """
+                    DELETE FROM reference_edges
+                    WHERE id = ?
+                    """,
+                    (edge["id"],),
+                )
+
+            repaired_edges += 1
+
+        # ----------------------------------------------------
+        # Alias crawl job -> canonical crawl job
+        # ----------------------------------------------------
+
+        if crawl_jobs_exists:
+            alias_job = connection.execute(
+                """
+                SELECT *
+                FROM crawl_jobs
+                WHERE document_id = ?
+                """,
+                (alias_document_id,),
+            ).fetchone()
+
+            canonical_job = connection.execute(
+                """
+                SELECT *
+                FROM crawl_jobs
+                WHERE document_id = ?
+                """,
+                (canonical_document_id,),
+            ).fetchone()
+
+            canonical_source_url = (
+                canonical_version["source_url"]
+                or ""
+            )
+
+            if alias_job is not None:
+                if canonical_job is None:
+                    connection.execute(
+                        """
+                        INSERT INTO crawl_jobs(
+                            document_id,
+                            depth,
+                            status,
+                            attempts,
+                            discovered_from_edge_id,
+                            source_url,
+                            last_error,
+                            updated_at
+                        )
+                        VALUES (
+                            ?,
+                            ?,
+                            'indexed',
+                            ?,
+                            ?,
+                            ?,
+                            '',
+                            CURRENT_TIMESTAMP
+                        )
+                        """,
+                        (
+                            canonical_document_id,
+                            alias_job["depth"],
+                            alias_job["attempts"],
+                            alias_job[
+                                "discovered_from_edge_id"
+                            ],
+                            canonical_source_url,
+                        ),
+                    )
+
+                else:
+                    alias_is_shallower = (
+                        alias_job["depth"]
+                        < canonical_job["depth"]
+                    )
+
+                    if alias_is_shallower:
+                        discovered_from_edge_id = (
+                            alias_job[
+                                "discovered_from_edge_id"
+                            ]
+                        )
+                    else:
+                        discovered_from_edge_id = (
+                            canonical_job[
+                                "discovered_from_edge_id"
+                            ]
+                            or alias_job[
+                                "discovered_from_edge_id"
+                            ]
+                        )
+
+                    connection.execute(
+                        """
+                        UPDATE crawl_jobs
+                        SET
+                            depth = MIN(depth, ?),
+                            status = 'indexed',
+                            attempts = MAX(attempts, ?),
+                            discovered_from_edge_id = ?,
+                            source_url = ?,
+                            last_error = '',
+                            updated_at =
+                                CURRENT_TIMESTAMP
+                        WHERE document_id = ?
+                        """,
+                        (
+                            alias_job["depth"],
+                            alias_job["attempts"],
+                            discovered_from_edge_id,
+                            (
+                                canonical_source_url
+                                or canonical_job[
+                                    "source_url"
+                                ]
+                                or alias_job[
+                                    "source_url"
+                                ]
+                            ),
+                            canonical_document_id,
+                        ),
+                    )
+
+                connection.execute(
+                    """
+                    DELETE FROM crawl_jobs
+                    WHERE document_id = ?
+                    """,
+                    (alias_document_id,),
+                )
+
+        # ----------------------------------------------------
+        # Alias artık hiçbir yerde target olmamalı.
+        # ----------------------------------------------------
+
+        remaining_edges = connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM reference_edges
+            WHERE target_document_id = ?
+            """,
+            (alias_document_id,),
+        ).fetchone()[0]
+
+        if remaining_edges != 0:
+            raise RuntimeError(
+                "3GPP alias repair sonrası "
+                f"{remaining_edges} edge alias'a bağlı kaldı."
+            )
+
+        # Alias'ın version'ı olmadığını yukarıda doğruladık.
+        connection.execute(
+            """
+            DELETE FROM documents
+            WHERE id = ?
+            """,
+            (alias_document_id,),
+        )
+
+        connection.commit()
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    return repaired_edges
 
 
 def _content_needles(text: str) -> list[str]:
@@ -570,10 +1082,19 @@ def ingest_document(
     )
 
     for reference in references:
+        (
+            target_org,
+            target_code,
+        ) = _canonicalize_3gpp_reference(
+            catalog,
+            reference.org,
+            reference.code,
+        )
+
         target_document_id = (
             catalog.upsert_document(
-                org=reference.org,
-                code=reference.code,
+                org=target_org,
+                code=target_code,
                 title=reference.title,
             )
         )
@@ -586,8 +1107,8 @@ def ingest_document(
             target_document_id=(
                 target_document_id
             ),
-            target_org=reference.org,
-            target_code=reference.code,
+            target_org=target_org,
+            target_code=target_code,
             ref_number=(
                 reference.ref_number
             ),
@@ -596,6 +1117,13 @@ def ingest_document(
                 reference.reference_kind
             ),
         )
+
+    _repair_opposite_3gpp_alias(
+        catalog,
+        canonical_document_id=document_id,
+        org=document.org,
+        code=document.code,
+    )
 
     return V3IngestResult(
         document_id=document_id,
