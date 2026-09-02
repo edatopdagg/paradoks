@@ -143,6 +143,76 @@ class ThreeGppIdentityHeaderTests(
             )
 
 
+
+class IetfIdentityHeaderTests(
+    unittest.TestCase
+):
+    def identity(
+        self,
+        code: str,
+    ) -> VersionIdentity:
+        return VersionIdentity(
+            version=f"RFC {code}",
+            release="",
+            source_filename=(
+                f"rfc{code}.html"
+            ),
+        )
+
+    def test_accepts_legacy_rfc_colon_header_791(
+        self,
+    ):
+        _validate_identity(
+            org="IETF",
+            code="791",
+            identity=self.identity(
+                "791"
+            ),
+            document_text=(
+                "RFC:  791\n"
+                "\n"
+                "INTERNET PROTOCOL\n"
+                "September 1981"
+            ),
+        )
+
+    def test_accepts_legacy_rfc_colon_header_813(
+        self,
+    ):
+        _validate_identity(
+            org="IETF",
+            code="813",
+            identity=self.identity(
+                "813"
+            ),
+            document_text=(
+                "RFC:  813\n"
+                "\n"
+                "WINDOW AND ACKNOWLEDGEMENT "
+                "STRATEGY IN TCP"
+            ),
+        )
+
+    def test_still_rejects_wrong_ietf_rfc_number(
+        self,
+    ):
+        with self.assertRaises(
+            ValueError
+        ):
+            _validate_identity(
+                org="IETF",
+                code="791",
+                identity=self.identity(
+                    "791"
+                ),
+                document_text=(
+                    "RFC:  813\n"
+                    "Wrong RFC"
+                ),
+            )
+
+
+
 if __name__ == "__main__":
     unittest.main(
         verbosity=2

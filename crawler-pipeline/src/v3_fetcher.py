@@ -455,7 +455,7 @@ def _validate_identity(
             not number_match
             or not re.search(
                 (
-                    rf"\bRFC\s*"
+                    rf"\bRFC\s*:?\s*"
                     rf"{re.escape(number_match.group(1))}"
                     rf"\b"
                 ),

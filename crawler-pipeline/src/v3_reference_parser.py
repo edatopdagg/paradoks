@@ -22,25 +22,46 @@ class V3Reference:
 
 
 
+# IETF bibliography label'ları tarihsel olarak çok
+# farklı biçimlerde kullanılabiliyor:
+#
+#   [RFC2119]
+#   [RFC-2401]
+#   [ICMPv6]
+#   [1]
+#   [IAB-RFC1087, 1989]
+#   [Reynolds-RFC1135, 1989]
+#   [Eichin and Rochlis, 1989]
+#
+# Dolayısıyla label içeriğini dar bir whitelist ile
+# sınırlamak yerine gerçek bibliography entry sınırını
+# SATIR BAŞINDAKİ [ ... ] yapısıyla belirliyoruz.
+#
+# [Page 66] gibi RFC Editor artifact'ları bibliography
+# label değildir.
 _IETF_LABEL_PATTERN = (
-    r"(?:"
-    r"RFC\s*[- ]?\s*\d{3,5}"
-    r"|"
-    r"[A-Z][A-Z0-9._-]*"
-    r")"
+    r"(?!Page\s+\d+\b)"
+    r"[^\[\]\r\n]{1,160}"
 )
 
 _IETF_ENTRY = re.compile(
-    rf"\[\s*"
+    rf"^[ \t]*"
+    rf"\[[ \t\r\n]*"
     rf"(?P<label>{_IETF_LABEL_PATTERN})"
-    rf"\s*\]"
+    rf"[ \t\r\n]*\]"
     rf"(?P<body>.*?)"
     rf"(?="
-    rf"\[\s*{_IETF_LABEL_PATTERN}\s*\]"
+    rf"^[ \t]*"
+    rf"\[[ \t\r\n]*"
+    rf"{_IETF_LABEL_PATTERN}"
+    rf"[ \t\r\n]*\]"
     rf"|\Z"
     rf")",
-    re.IGNORECASE | re.DOTALL,
+    re.IGNORECASE
+    | re.DOTALL
+    | re.MULTILINE,
 )
+
 
 _RFC_LABEL = re.compile(
     r"^\s*RFC\s*[- ]?\s*"
@@ -64,15 +85,93 @@ def _clean_space(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("\xa0", " ").replace("\u200b", "")).strip()
 
 
-def _last_heading(text: str, heading: str) -> Optional[re.Match[str]]:
+def _last_heading(
+    text: str,
+    heading: str,
+) -> Optional[re.Match[str]]:
+    """
+    RFC bibliography başlığının gerçek gövde
+    içindeki son occurrence'ını döndürür.
+
+    Desteklenen örnekler:
+
+        Normative References
+
+        . Normative References
+
+        Informative References
+
+        . Informative References
+
+    TOC satırlarındaki trailing dot leader'ları
+    özellikle eşleştirilmez; böylece gerçek body
+    heading tercih edilir.
+    """
+
     matches = list(
         re.finditer(
-            rf"(?im)^\s*{re.escape(heading)}\s*$",
+            (
+                rf"(?im)^\s*"
+                rf"(?:\.\s*)?"
+                rf"{re.escape(heading)}"
+                rf"\s*$"
+            ),
             text,
         )
     )
-    return matches[-1] if matches else None
 
+    return (
+        matches[-1]
+        if matches
+        else None
+    )
+
+
+def _trim_ietf_reference_section(
+    section: str,
+) -> str:
+    """
+    IETF bibliography bölümünü gerçek sonraki
+    doküman bölümünde keser.
+
+    Özellikle şu taşmayı engeller:
+
+        Normative References
+        ...
+        Appendix A
+        ...
+        RFC 1750
+
+    Appendix içindeki RFC ifadeleri bibliography
+    referansı değildir.
+
+    Yalnız bağımsız bölüm başlıkları eşleştirilir;
+    normal paragraf içindeki "appendix" kelimesine
+    dokunulmaz.
+    """
+
+    boundary = re.search(
+        (
+            r"(?im)^\s*"
+            r"(?:\.\s*)?"
+            r"(?:"
+            r"Appendix(?:\s+[A-Z0-9]+)?"
+            r"|Acknowledg(?:e)?ments?"
+            r"|Editor(?:'s|s)? Address"
+            r"|Authors?' Addresses?"
+            r"|Full Copyright Statement"
+            r")"
+            r"\s*$"
+        ),
+        section,
+    )
+
+    if boundary is None:
+        return section
+
+    return section[
+        :boundary.start()
+    ]
 
 
 def _ietf_sections(
@@ -134,10 +233,14 @@ def _ietf_sections(
             else len(text)
         )
 
-        section = text[
-            normative.end():
-            end
-        ]
+        section = (
+            _trim_ietf_reference_section(
+                text[
+                    normative.end():
+                    end
+                ]
+            )
+        )
 
         sections.append(
             (
@@ -172,6 +275,18 @@ def _ietf_sections(
             ]
             if end_match
             else tail
+        )
+
+        section = (
+            _trim_ietf_reference_section(
+                section
+            )
+        )
+
+        section = (
+            _trim_ietf_reference_section(
+                section
+            )
         )
 
         sections.append(
@@ -254,6 +369,54 @@ def _ietf_sections(
     return sections
 
 
+def _strip_ietf_page_header_rfc(
+    body: str,
+) -> str:
+    """
+    RFC Editor HTML -> text dönüşümünde bibliography
+    entry'lerinin arasına giren sayfa header/footer RFC
+    kimliklerini temizler.
+
+    Örnek:
+
+        Schulzrinne, et al. Standards Track [Page 100]
+        RFC 3550
+        RTP July 2003
+
+    Buradaki RFC 3550 bibliography referansı değildir;
+    mevcut belgenin sayfa üstbilgisidir.
+
+    Aynı durum:
+
+        Leach, et al. Standards Track [Page 17]
+        RFC 4122
+        A UUID URN Namespace July 2005
+
+    biçiminde de görülür.
+
+    Yalnız [Page N] satırını hemen takip eden RFC kimlik
+    satırı kaldırılır. Entry içerisindeki gerçek
+    bibliyografik RFC xxxx ifadelerine dokunulmaz.
+    """
+
+    return re.sub(
+        (
+            r"(?im)"
+            r"^[^\n]*"
+            r"\[Page\s+\d+\]"
+            r"[^\n]*"
+            r"\n"
+            r"(?:[ \t]*\n)*"
+            r"[ \t]*"
+            r"RFC[ \t]*:?[ \t]*"
+            r"\d{3,5}"
+            r"[ \t]*$"
+        ),
+        "",
+        body,
+    )
+
+
 def _rfc_number_from_entry(
     *,
     label: str,
@@ -304,8 +467,14 @@ def _rfc_number_from_entry(
     if not allow_symbolic_label:
         return None
 
+    searchable_body = (
+        _strip_ietf_page_header_rfc(
+            body
+        )
+    )
+
     body_match = _RFC_BODY.search(
-        body
+        searchable_body
     )
 
     if body_match is None:
@@ -318,6 +487,71 @@ def _rfc_number_from_entry(
             )
         )
     )
+
+
+def _ietf_title_from_entry(
+    *,
+    raw_body: str,
+    clean_body: str,
+) -> str:
+    """
+    IETF bibliography entry başlığını çıkarır.
+
+    Öncelik:
+    1. Tırnak içindeki klasik RFC başlığı.
+    2. Legacy tırnaksız kayıtlarda RFC numarasından
+       hemen önceki son anlamlı satır.
+
+    Örnek:
+
+        [Reynolds-RFC1135, 1989]
+        The Helminthiasis of the Internet,
+        RFC 1135,
+        ...
+
+    -> The Helminthiasis of the Internet
+    """
+
+    quoted = _QUOTED_TITLE.search(
+        clean_body
+    )
+
+    if quoted is not None:
+        return _clean_space(
+            quoted.group(
+                "title"
+            )
+        )
+
+    rfc_match = _RFC_BODY.search(
+        raw_body
+    )
+
+    if rfc_match is None:
+        return ""
+
+    prefix = raw_body[
+        :rfc_match.start()
+    ]
+
+    lines = [
+        _clean_space(line)
+        for line in prefix.splitlines()
+        if _clean_space(line)
+    ]
+
+    if not lines:
+        return ""
+
+    candidate = lines[-1].strip()
+
+    candidate = re.sub(
+        r"[\s,;:.]+$",
+        "",
+        candidate,
+    ).strip()
+
+    return candidate
 
 
 def _parse_ietf(
@@ -346,16 +580,18 @@ def _parse_ietf(
                 "label"
             )
 
+            raw_body = match.group(
+                "body"
+            )
+
             body = _clean_space(
-                match.group(
-                    "body"
-                )
+                raw_body
             )
 
             number = (
                 _rfc_number_from_entry(
                     label=label,
-                    body=body,
+                    body=raw_body,
                     allow_symbolic_label=(
                         allow_symbolic_labels
                     ),
@@ -365,10 +601,9 @@ def _parse_ietf(
             if number is None:
                 continue
 
-            title_match = (
-                _QUOTED_TITLE.search(
-                    body
-                )
+            title = _ietf_title_from_entry(
+                raw_body=raw_body,
+                clean_body=body,
             )
 
             discovered.append(
@@ -380,15 +615,7 @@ def _parse_ietf(
                     ),
                     org="IETF",
                     code=number,
-                    title=(
-                        _clean_space(
-                            title_match.group(
-                                "title"
-                            )
-                        )
-                        if title_match
-                        else ""
-                    ),
+                    title=title,
                     reference_kind=(
                         reference_kind
                     ),
