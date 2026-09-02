@@ -2456,6 +2456,142 @@ def _match_ietf_fallback_heading(
     )
 
 
+def _match_ietf_fallback_split_heading(
+    lines: list[str],
+    index: int,
+) -> tuple[str, str, int] | None:
+    """
+    TOC bulunmayan legacy RFC belgelerinde
+    iki satıra ayrılmış section heading'lerini tanır.
+
+    Örnekler:
+
+        1
+        . Introduction
+
+        2.1
+        Keying Material
+
+        2.4
+        . Performance
+
+    Top-level section numaralarında ikinci satırın
+    "." ile başlaması zorunludur. Bu, RFC içindeki
+    yalın sayfa numaralarının yanlışlıkla section
+    kabul edilmesini azaltır.
+    """
+
+    if (
+        index < 0
+        or index + 1 >= len(lines)
+    ):
+        return None
+
+    raw_number_line = (
+        lines[index]
+        .rstrip()
+    )
+
+    # Mevcut fallback davranışındaki gibi
+    # girintili numaraları heading kabul etme.
+    if (
+        raw_number_line
+        != raw_number_line.lstrip()
+    ):
+        return None
+
+    number_line = (
+        raw_number_line.strip()
+    )
+
+    number_match = (
+        IETF_SECTION_NUMBER.fullmatch(
+            number_line
+        )
+    )
+
+    if number_match is None:
+        return None
+
+    raw_title_line = (
+        lines[index + 1]
+        .strip()
+    )
+
+    if not raw_title_line:
+        return None
+
+    section_number = (
+        number_match.group(1)
+    )
+
+    has_dot_prefix = (
+        re.match(
+            r"^\.\s*",
+            raw_title_line,
+        )
+        is not None
+    )
+
+    # Örnek:
+    #
+    #   1
+    #   . Introduction
+    #
+    # Top-level numarada "." zorunlu.
+    # Böylece yalın RFC sayfa numaralarını
+    # heading sanma ihtimali azaltılır.
+    if (
+        "." not in section_number
+        and not has_dot_prefix
+    ):
+        return None
+
+    title_candidate = re.sub(
+        r"^\.\s*",
+        "",
+        raw_title_line,
+    ).strip()
+
+    if not title_candidate:
+        return None
+
+    # İkinci satır da yalnızca sayıysa
+    # gerçek heading değildir.
+    if IETF_SECTION_NUMBER.fullmatch(
+        title_candidate
+    ):
+        return None
+
+    # RFC page header benzeri satırları dışla.
+    if re.match(
+        r"^RFC\s*:?\s*-?\s*\d+\b",
+        title_candidate,
+        flags=re.IGNORECASE,
+    ):
+        return None
+
+    if re.search(
+        r"\[Page\s+\d+\]",
+        title_candidate,
+        flags=re.IGNORECASE,
+    ):
+        return None
+
+    title = _clean_rfc_title(
+        title_candidate
+    )
+
+    if not title:
+        return None
+
+    return (
+        section_number,
+        title,
+        2,
+    )
+
+
 # =========================================================
 # IETF SPLITTER
 # =========================================================
@@ -2590,7 +2726,28 @@ def _split_ietf_clauses(
     # FALLBACK
     # -------------------------------------------------
 
-    for line in lines:
+    i = 0
+
+    seen_sections = set()
+
+    terminal_titles = {
+        "author's address",
+        "authors' address",
+        "authors' addresses",
+        "author addresses",
+        "authors addresses",
+        "editor's address",
+        "editors' address",
+        "editors' addresses",
+        "editor addresses",
+        "editors addresses",
+        "full copyright statement",
+        "copyright statement",
+    }
+
+    while i < len(lines):
+
+        line = lines[i]
 
         match = (
             _match_ietf_fallback_heading(
@@ -2598,7 +2755,62 @@ def _split_ietf_clauses(
             )
         )
 
+        split_heading = None
+
+        if match is None:
+
+            split_heading = (
+                _match_ietf_fallback_split_heading(
+                    lines=lines,
+                    index=i,
+                )
+            )
+
+        # =================================================
+        # TEK SATIRLI HEADING
+        # =================================================
+
         if match:
+
+            section_number = (
+                match.group(1)
+            )
+
+            section_title = (
+                _clean_rfc_title(
+                    match.group(2)
+                )
+            )
+
+            normalized_title = re.sub(
+                r"\s+",
+                " ",
+                section_title or "",
+            ).strip().casefold()
+
+            # RFC sonu idari/boilerplate alanı.
+            # Aranabilir teknik clause olarak tutulmaz.
+            if (
+                normalized_title
+                in terminal_titles
+            ):
+                break
+
+            # Aynı section numarasını ikinci kez
+            # gerçek clause olarak açma.
+            if (
+                section_number
+                in seen_sections
+            ):
+
+                if current:
+
+                    current[2].append(
+                        line
+                    )
+
+                i += 1
+                continue
 
             if current:
 
@@ -2607,18 +2819,103 @@ def _split_ietf_clauses(
                 )
 
             current = [
-                match.group(1),
-                _clean_rfc_title(
-                    match.group(2)
-                ),
+                section_number,
+                section_title,
                 [],
             ]
 
-        elif current:
+            seen_sections.add(
+                section_number
+            )
+
+            i += 1
+            continue
+
+        # =================================================
+        # İKİ SATIRLI LEGACY HEADING
+        # =================================================
+
+        if split_heading is not None:
+
+            (
+                section_number,
+                section_title,
+                consumed_lines,
+            ) = split_heading
+
+            normalized_title = re.sub(
+                r"\s+",
+                " ",
+                section_title or "",
+            ).strip().casefold()
+
+            # Örn:
+            #
+            #   6
+            #   . Editors' Addresses
+            #
+            # veya:
+            #
+            #   7
+            #   . Full Copyright Statement
+            #
+            # Bunlar teknik section değildir.
+            if (
+                normalized_title
+                in terminal_titles
+            ):
+                break
+
+            # Extraction kaynaklı page-number tekrarlarının
+            # daha önce açılmış section'ı yeniden başlatmasını
+            # engelle.
+            if (
+                section_number
+                in seen_sections
+            ):
+
+                if current:
+
+                    current[2].append(
+                        line
+                    )
+
+                # Burada iki satırı birden tüketmiyoruz.
+                # Sonraki satır normal body olarak yeniden
+                # değerlendirilebilir.
+                i += 1
+                continue
+
+            if current:
+
+                clauses.append(
+                    current
+                )
+
+            current = [
+                section_number,
+                section_title,
+                [],
+            ]
+
+            seen_sections.add(
+                section_number
+            )
+
+            i += consumed_lines
+            continue
+
+        # =================================================
+        # NORMAL BODY
+        # =================================================
+
+        if current:
 
             current[2].append(
                 line
             )
+
+        i += 1
 
     if current:
 
