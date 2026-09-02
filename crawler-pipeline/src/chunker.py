@@ -3028,6 +3028,130 @@ def _split_generic_clauses(
 
 
 # =========================================================
+# ITU-T UNSTRUCTURED DOCUMENT FALLBACK
+# =========================================================
+
+def _split_itu_unstructured_document(
+    document_text: str,
+) -> list[
+    tuple[str, str, str]
+]:
+    """
+    Numaralı section/clause üretmeyen fakat anlamlı
+    içerik taşıyan ITU-T dokümanları için kontrollü
+    document-level fallback.
+
+    Amaç:
+    - Normal ITU-T belgelerinin mevcut generic parsing
+      davranışını değiştirmemek.
+    - Yalnız generic splitter tamamen boş kaldığında
+      kullanılmak.
+    - Boş/kapak niteliğindeki belgeleri yanlışlıkla
+      indexlememek.
+    """
+
+    if not document_text:
+        return []
+
+    cleaned_lines: list[str] = []
+
+    for raw_line in document_text.splitlines():
+
+        line = (
+            raw_line
+            or ""
+        ).strip()
+
+        if not line:
+            continue
+
+        # Extraction page marker.
+        if re.fullmatch(
+            r"\[\[PAGE:\d+\]\]",
+            line,
+            flags=re.IGNORECASE,
+        ):
+            continue
+
+        # Yaygın ITU-T sayfa footer'ları.
+        if re.fullmatch(
+            (
+                r"(?:[ivxlcdm]+|\d+)\s+"
+                r"ITU-T\s+Rec\..*"
+            ),
+            line,
+            flags=re.IGNORECASE,
+        ):
+            continue
+
+        if re.fullmatch(
+            (
+                r"ITU-T\s+Rec\..*"
+                r"\s(?:[ivxlcdm]+|\d+)"
+            ),
+            line,
+            flags=re.IGNORECASE,
+        ):
+            continue
+
+        # Belgenin arkasındaki standart seri kataloğu,
+        # esas doküman içeriği değildir.
+        if (
+            line.casefold()
+            == "series of itu-t recommendations"
+            and len(cleaned_lines) >= 20
+        ):
+            break
+
+        if line.casefold() in {
+            "printed in switzerland",
+        }:
+            continue
+
+        if re.fullmatch(
+            r"Geneva,\s*\d{4}",
+            line,
+            flags=re.IGNORECASE,
+        ):
+            continue
+
+        cleaned_lines.append(
+            line
+        )
+
+    body = "\n".join(
+        cleaned_lines
+    ).strip()
+
+    if not body:
+        return []
+
+    # Kapak/çok kısa extraction'ların indexlenmesini
+    # engelleyen güvenlik eşiği.
+    word_count = len(
+        re.findall(
+            r"[A-Za-zÀ-ÖØ-öø-ÿ]{2,}",
+            body,
+        )
+    )
+
+    if (
+        len(body) < 300
+        or word_count < 50
+    ):
+        return []
+
+    return [
+        (
+            "document",
+            "",
+            body,
+        )
+    ]
+
+
+
+# =========================================================
 # ANA CLAUSE SPLITTER
 # =========================================================
 
@@ -3062,6 +3186,24 @@ def split_into_clauses(
                 document_text
             )
         )
+
+    if org == "ITU-T":
+
+        itu_clauses = (
+            _split_generic_clauses(
+                document_text
+            )
+        )
+
+        if itu_clauses:
+            return itu_clauses
+
+        return (
+            _split_itu_unstructured_document(
+                document_text
+            )
+        )
+
 
     if org == "3GPP":
 
