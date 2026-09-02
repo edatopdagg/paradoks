@@ -716,6 +716,80 @@ August 1993.
 
 
 
+
+class IetfSplitTerminalReferenceBoundaryTests(
+    unittest.TestCase
+):
+
+    def test_reference_entry_stops_before_split_terminal_heading(
+        self,
+    ):
+        text = """
+7
+. References
+
+[
+RFC-2119
+] Bradner, S.,
+"Key words for use in RFCs to Indicate Requirement Levels",
+BCP 14,
+RFC 2119,
+March 1997.
+
+6
+. Editors' Addresses
+
+Rob Glenn
+NIST
+EMail: rob.glenn@example.com
+
+7
+. Full Copyright Statement
+
+Copyright (C) The Internet Society.
+"""
+
+        references = parse_v3_references(
+            "IETF",
+            text,
+        )
+
+        self.assertEqual(
+            len(references),
+            1,
+        )
+
+        self.assertEqual(
+            references[0].code,
+            "2119",
+        )
+
+        self.assertEqual(
+            references[0].title,
+            (
+                "Key words for use in RFCs "
+                "to Indicate Requirement Levels"
+            ),
+        )
+
+        raw_text = references[0].raw_text
+
+        self.assertNotIn(
+            "Editors' Addresses",
+            raw_text,
+        )
+
+        self.assertNotIn(
+            "Full Copyright Statement",
+            raw_text,
+        )
+
+        self.assertNotIn(
+            "rob.glenn@example.com",
+            raw_text,
+        )
+
+
 if __name__ == "__main__":
     unittest.main(
         verbosity=2,

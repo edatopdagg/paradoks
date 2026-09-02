@@ -318,13 +318,51 @@ def _ietf_sections(
         end_match = re.search(
             (
                 r"(?im)^\s*"
+
+                # Legacy RFC extraction bazen terminal
+                # heading'in section/page numarasını ayrı
+                # satıra çıkarır:
+                #
+                #     6
+                #     . Editors' Addresses
+                #
+                #     7
+                #     . Full Copyright Statement
+                #
+                # Yalnız terminal heading'in hemen önündeki
+                # yalın section numarasına izin veriyoruz.
+                r"(?:"
+                r"[1-9]\d?"
+                r"(?:\.\d+)*"
+                r"\.?"
+                r"\s*\n\s*"
+                r")?"
+
+                # Split extraction'daki baştaki ".".
+                r"(?:\.\s*)?"
+
                 r"(?:"
                 r"Changes Since"
                 r"(?:\s+RFC[-\s]?\d+)?"
-                r"|Editor(?:'s|s)? Address"
-                r"|Authors?' Addresses?"
+
+                # Editor's Address
+                # Editors' Addresses
+                # Editors Addresses
+                r"|Editors?"
+                r"(?:'s|')?"
+                r"\s+Addresses?"
+
+                # Author's Address
+                # Authors' Addresses
+                # Authors Addresses
+                r"|Authors?"
+                r"(?:'s|')?"
+                r"\s+Addresses?"
+
                 r"|Full Copyright Statement"
+                r"|Copyright Statement"
                 r")"
+
                 r"\s*$"
             ),
             tail,
