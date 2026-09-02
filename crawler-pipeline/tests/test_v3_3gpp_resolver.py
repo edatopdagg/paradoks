@@ -213,5 +213,39 @@ class ThreeGppResolverTests(
         )
 
 
+    @patch(
+        "resolver._probe_http_status"
+    )
+    @patch(
+        "resolver._get"
+    )
+    def test_marks_forbidden_archive_folder_as_blocked(
+        self,
+        get_mock,
+        status_mock,
+    ):
+        get_mock.return_value = None
+        status_mock.return_value = 403
+
+        resolved = _resolve_3gpp(
+            make_reference(
+                "TS 23.071"
+            )
+        )
+
+        self.assertEqual(
+            resolved.status,
+            DocStatus.BLOCKED,
+        )
+
+        self.assertEqual(
+            resolved.source_url,
+            (
+                "https://www.3gpp.org/ftp/Specs/archive/"
+                "23_series/23.071/"
+            ),
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

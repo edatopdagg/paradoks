@@ -25,6 +25,31 @@ def _get(url: str) -> requests.Response | None:
     return None
 
 
+def _probe_http_status(
+    url: str,
+) -> int | None:
+    """
+    _get() başarısız olduğunda HTTP cevabının
+    nedenini ayırt etmek için yalnız status code döndürür.
+
+    Özellikle bazı resmi 3GPP archive klasörleri
+    403 Forbidden dönebildiği için kullanılır.
+    """
+
+    try:
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=TIMEOUT,
+            allow_redirects=True,
+        )
+
+        return response.status_code
+
+    except requests.RequestException:
+        return None
+
+
 def _links(resp: requests.Response) -> list[str]:
     soup = BeautifulSoup(resp.text, "html.parser")
     return [a.get("href", "") for a in soup.find_all("a") if a.get("href")]
@@ -72,7 +97,22 @@ def _resolve_3gpp(ref: Reference) -> ResolvedSource:
     resp = _get(folder_url)
 
     if not resp:
-        return ResolvedSource(reference=ref, status=DocStatus.UNRESOLVED)
+        status_code = _probe_http_status(
+            folder_url
+        )
+
+        if status_code == 403:
+            return ResolvedSource(
+                reference=ref,
+                status=DocStatus.BLOCKED,
+                source_url=folder_url,
+            )
+
+        return ResolvedSource(
+            reference=ref,
+            status=DocStatus.UNRESOLVED,
+            source_url=folder_url,
+        )
 
     # Noktayi kaldirirken multipart ekini korur.
     # 23.041   -> 23041
