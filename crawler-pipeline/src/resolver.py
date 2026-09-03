@@ -211,7 +211,7 @@ def _resolve_etsi(ref: Reference) -> ResolvedSource:
         .lower()
     )
 
-    if doc_type not in {"ts", "tr"}:
+    if doc_type not in {"ts", "tr", "en"}:
         doc_type = "ts"
 
     range_folder = (
