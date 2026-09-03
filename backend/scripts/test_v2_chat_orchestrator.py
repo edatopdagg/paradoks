@@ -4,6 +4,9 @@ from unittest.mock import call, patch
 from app.services.chat_orchestrator import (
     generate_chat_response,
 )
+from app.services.conversation_memory import (
+    clear_conversation_memory,
+)
 
 
 def _source(
@@ -22,6 +25,9 @@ def _source(
 
 
 class ChatOrchestratorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        clear_conversation_memory()
+
     def test_echoes_existing_conversation_id(self) -> None:
         with patch(
             "app.services.chat_orchestrator.generate_reply",

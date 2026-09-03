@@ -1,6 +1,11 @@
+import re
 from typing import Any
 from uuid import uuid4
 
+from app.services.conversation_memory import (
+    append_turn,
+    get_recent_turns,
+)
 from app.services.question_planner import (
     build_question_plan,
 )
@@ -131,6 +136,124 @@ def _combine_answers(
     )
 
 
+
+def _needs_conversation_context(
+    question: str,
+) -> bool:
+    value = (
+        question
+        or ""
+    ).strip().casefold()
+
+    if not value:
+        return False
+
+    follow_up_starts = (
+        "peki ",
+        "peki bunun",
+        "peki bu",
+        "ya bunun",
+        "ya bu",
+        "bunun ",
+        "bunu ",
+        "buna ",
+        "bundan ",
+        "onun ",
+        "onu ",
+        "ona ",
+        "what about ",
+        "how about ",
+        "and what ",
+        "and how ",
+    )
+
+    if value.startswith(
+        follow_up_starts
+    ):
+        return True
+
+    pronoun_pattern = re.compile(
+        (
+            r"\b("
+            r"bu|bunun|bunu|buna|bunda|bundan|"
+            r"o|onun|onu|ona|aynı|"
+            r"this|that|it|its|these|those|same"
+            r")\b"
+        ),
+        flags=re.IGNORECASE,
+    )
+
+    return bool(
+        pronoun_pattern.search(
+            value
+        )
+    )
+
+
+def _build_contextual_question(
+    question: str,
+    turns,
+    *,
+    language: str,
+) -> str:
+    if (
+        not turns
+        or not _needs_conversation_context(
+            question
+        )
+    ):
+        return question
+
+    context_parts: list[str] = []
+
+    for turn in turns:
+        user_message = (
+            turn.user_message
+            or ""
+        ).strip()
+
+        assistant_message = (
+            turn.assistant_message
+            or ""
+        ).strip()
+
+        if user_message:
+            context_parts.append(
+                user_message
+            )
+
+        if assistant_message:
+            context_parts.append(
+                assistant_message
+            )
+
+    if not context_parts:
+        return question
+
+    context = " ".join(
+        context_parts
+    )
+
+    # Retrieval sorgusunun gereksiz büyümesini engelle.
+    context = context[
+        -3000:
+    ]
+
+    if language == "en":
+        return (
+            f"{question}\n\n"
+            f"Previous conversation context: "
+            f"{context}"
+        )
+
+    return (
+        f"{question}\n\n"
+        f"Önceki konuşma bağlamı: "
+        f"{context}"
+    )
+
+
+
 def generate_chat_response(
     message: str,
     conversation_id: str | None = None,
@@ -142,6 +265,11 @@ def generate_chat_response(
     resolved_conversation_id = (
         conversation_id
         or str(uuid4())
+    )
+
+    recent_turns = get_recent_turns(
+        resolved_conversation_id,
+        limit=2,
     )
 
     answers: list[str] = []
@@ -167,8 +295,16 @@ def generate_chat_response(
     ] = set()
 
     for planned_question in plan.questions:
+        retrieval_question = (
+            _build_contextual_question(
+                planned_question.text,
+                recent_turns,
+                language=plan.language,
+            )
+        )
+
         result = generate_reply(
-            planned_question.text
+            retrieval_question
         )
 
         answer = str(
@@ -224,6 +360,12 @@ def generate_chat_response(
 
     standard_answer = _combine_answers(
         answers
+    )
+
+    append_turn(
+        resolved_conversation_id,
+        user_message=message,
+        assistant_message=standard_answer,
     )
 
     return {
