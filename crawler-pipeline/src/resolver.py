@@ -321,6 +321,17 @@ def _resolve_etsi(ref: Reference) -> ResolvedSource:
 def _resolve_itu(
     ref: Reference,
 ) -> ResolvedSource:
+    """
+    ITU-T Recommendation resolver.
+
+    Generic Recommendation referanslarında:
+    - BASE Recommendation primary kaynaktır.
+    - Amendment / Corrigendum / Appendix / Erratum,
+      yalnız açıkça isteniyorsa primary seçilir.
+    - Bir component daha yeni tarihli diye generic
+      Recommendation'ın yerine geçmez.
+    """
+
     code_clean = ref.code.strip()
 
     landing_url = (
@@ -349,15 +360,15 @@ def _resolve_itu(
             rf"{re.escape(code_clean)}"
             r"-(?P<date>\d{6})-"
             r"(?P<status>[A-Z])"
+            r"(?P<suffix>![^&\"']+)?"
         ),
         flags=re.IGNORECASE,
     )
 
-    version_candidates: list[
-        tuple[str, str, str]
-    ] = []
+    candidates = []
 
     for link in links:
+
         match = version_pattern.search(
             link
         )
@@ -368,49 +379,238 @@ def _resolve_itu(
         if "lang=en" not in link.casefold():
             continue
 
-        version_candidates.append(
+        suffix = (
+            match.group("suffix")
+            or ""
+        )
+
+        suffix_lower = (
+            suffix.casefold()
+        )
+
+        if not suffix:
+            kind = "base"
+
+        elif suffix_lower.startswith(
+            "!amd"
+        ):
+            kind = "amendment"
+
+        elif suffix_lower.startswith(
+            "!cor"
+        ):
+            kind = "corrigendum"
+
+        elif suffix_lower.startswith(
+            "!app"
+        ):
+            kind = "appendix"
+
+        elif suffix_lower.startswith(
+            "!err"
+        ):
+            kind = "erratum"
+
+        else:
+            kind = "other"
+
+        candidates.append(
+            {
+                "date": match.group("date"),
+                "status": match.group("status"),
+                "suffix": suffix,
+                "kind": kind,
+                "link": link,
+            }
+        )
+
+    reference_text = " ".join(
+        (
+            ref.title or "",
+            ref.raw_text or "",
+        )
+    )
+
+    normalized_reference = re.sub(
+        r"\s+",
+        " ",
+        reference_text,
+    ).strip().casefold()
+
+    explicit_kind = None
+    explicit_number = None
+
+    component_patterns = (
+        (
+            "amendment",
+            r"\b(?:amendment|amd\.?)\s*(\d+)",
+        ),
+        (
+            "corrigendum",
+            r"\b(?:corrigendum|cor\.?)\s*(\d+)",
+        ),
+        (
+            "appendix",
+            r"\b(?:appendix|app\.?)\s*([ivxlcdm]+|\d+)",
+        ),
+        (
+            "erratum",
+            r"\b(?:erratum|err\.?)\s*(\d+)",
+        ),
+    )
+
+    for kind, pattern in component_patterns:
+
+        match = re.search(
+            pattern,
+            reference_text,
+            flags=re.IGNORECASE,
+        )
+
+        if match is None:
+            continue
+
+        explicit_kind = kind
+        explicit_number = (
+            match.group(1)
+        )
+
+        break
+
+    # --------------------------------------------------------
+    # I.112 semantic identity
+    # --------------------------------------------------------
+    #
+    # 3GPP referansı "Appendix I" yazmıyor fakat
+    # "General telecommunication terminology and definitions"
+    # doğrudan I.112 Appendix I içeriğinin kimliğidir.
+    # --------------------------------------------------------
+
+    if (
+        code_clean.upper() == "I.112"
+        and (
+            "general telecommunication "
+            "terminology and definitions"
+        )
+        in normalized_reference
+    ):
+        explicit_kind = "appendix"
+        explicit_number = "1"
+
+    # --------------------------------------------------------
+    # GENERIC → yalnız BASE
+    # EXPLICIT COMPONENT → yalnız o component
+    # --------------------------------------------------------
+
+    if explicit_kind is None:
+
+        candidate_pool = [
+            candidate
+            for candidate in candidates
+            if candidate["kind"] == "base"
+        ]
+
+    else:
+
+        candidate_pool = [
+            candidate
+            for candidate in candidates
+            if candidate["kind"] == explicit_kind
+        ]
+
+        if explicit_number:
+
+            if explicit_kind == "appendix":
+                expected = (
+                    f"!app{explicit_number}"
+                    .casefold()
+                )
+
+            elif explicit_kind == "amendment":
+                expected = (
+                    f"!amd{explicit_number}"
+                    .casefold()
+                )
+
+            elif explicit_kind == "corrigendum":
+                expected = (
+                    f"!cor{explicit_number}"
+                    .casefold()
+                )
+
+            elif explicit_kind == "erratum":
+                expected = (
+                    f"!err{explicit_number}"
+                    .casefold()
+                )
+
+            else:
+                expected = ""
+
+            if expected:
+
+                numbered_pool = [
+                    candidate
+                    for candidate
+                    in candidate_pool
+                    if (
+                        candidate["suffix"]
+                        .casefold()
+                        .startswith(expected)
+                    )
+                ]
+
+                if numbered_pool:
+                    candidate_pool = (
+                        numbered_pool
+                    )
+
+    if not candidate_pool:
+
+        return ResolvedSource(
+            reference=ref,
+            status=DocStatus.BLOCKED,
+            source_url=landing_url,
+        )
+
+    # Aynı candidate türündeki en güncel sürüm.
+    selected = max(
+        candidate_pool,
+        key=lambda candidate: (
+            candidate["date"],
             (
-                match.group("date"),
-                match.group("status"),
-                link,
-            )
-        )
-
-    source_page_url = landing_url
-
-    if version_candidates:
-        latest_version_link = max(
-            version_candidates,
-            key=lambda item: (
-                item[0],
-                item[1].casefold() == "i",
+                candidate["status"]
+                .casefold()
+                == "i"
             ),
-        )[2]
+        ),
+    )
 
-        source_page_url = urljoin(
-            landing_url,
-            latest_version_link,
+    source_page_url = urljoin(
+        landing_url,
+        selected["link"],
+    )
+
+    version_response = _get(
+        source_page_url
+    )
+
+    if not version_response:
+
+        return ResolvedSource(
+            reference=ref,
+            status=DocStatus.UNRESOLVED,
+            source_url=source_page_url,
         )
 
-        version_response = _get(
-            source_page_url
-        )
-
-        if not version_response:
-            return ResolvedSource(
-                reference=ref,
-                status=DocStatus.UNRESOLVED,
-                source_url=source_page_url,
-            )
-
-        links = _links(
-            version_response
-        )
+    page_links = _links(
+        version_response
+    )
 
     pdf_link = next(
         (
             link
-            for link in links
+            for link in page_links
             if (
                 "dologin_pub.asp"
                 in link.casefold()
@@ -422,10 +622,11 @@ def _resolve_itu(
     )
 
     if pdf_link is None:
+
         pdf_link = next(
             (
                 link
-                for link in links
+                for link in page_links
                 if link.casefold().endswith(
                     ".pdf"
                 )
@@ -434,6 +635,7 @@ def _resolve_itu(
         )
 
     if pdf_link:
+
         return ResolvedSource(
             reference=ref,
             status=DocStatus.PENDING,
