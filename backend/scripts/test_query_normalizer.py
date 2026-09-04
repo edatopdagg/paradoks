@@ -94,9 +94,26 @@ unknown_test = normalizer.normalize(
     "AMF UE context transfer nasıl çalışıyor?"
 )
 
-assert unknown_test == [
-    "AMF UE context transfer nasıl çalışıyor?"
-]
+# Generic intent/entity translation artık
+# AMF + UE + prosedür bağlamında teknik retrieval
+# varyantları üretir. Orijinal kullanıcı sorgusu
+# her zaman ilk sırada korunmalıdır.
+assert (
+    unknown_test[0]
+    == "AMF UE context transfer nasıl çalışıyor?"
+)
+
+assert (
+    "AMF UE procedures and flows"
+    in unknown_test
+)
+
+assert (
+    "AMF UE operational call flow"
+    in unknown_test
+)
+
+assert len(unknown_test) <= 4
 
 release_test = normalizer.normalize(
     "PDU session nasıl kapatılıyor?"

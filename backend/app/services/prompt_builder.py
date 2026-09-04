@@ -62,6 +62,40 @@ def infer_answer_type(
         or ""
     ).casefold()
 
+    # -------------------------------------------------
+    # AMAÇ / İŞLEV ÖNCELİĞİ
+    # -------------------------------------------------
+    #
+    # "N3 referans noktasının görevi nedir?"
+    # gibi sorular reference-point kimliği değil,
+    # reference-point işlevi sorar.
+    #
+    # Bu nedenle purpose sinyalleri genel
+    # ARAYÜZ / REFERANS NOKTASI kurallarından
+    # önce değerlendirilir.
+    # -------------------------------------------------
+
+    early_purpose_patterns = (
+        r"\bne\s+işe\s+yar\w*",
+        r"\bamacı\s+ne",
+        r"\bhangi\s+amaçla\b",
+        r"\bne\s+amaçla\b",
+        r"\bgörevi\s+(?:ne|nedir)\b",
+        r"\bneden\s+kullan\w*",
+        r"\bwhat\s+is\s+the\s+purpose\b",
+        r"\bwhat\s+does\b",
+    )
+
+    if any(
+        re.search(
+            pattern,
+            clean_question,
+            flags=re.IGNORECASE,
+        )
+        for pattern in early_purpose_patterns
+    ):
+        return "AMAÇ / İŞLEV"
+
     rules = [
 
         # -------------------------------------------------

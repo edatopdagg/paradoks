@@ -39,7 +39,7 @@ from app.services.question_analysis import (
 from app.services.lexical_search_service import (
     LexicalSearchService,
 )
-from app.services.retriever import Retriever
+from app.services.tiered_retriever import TieredRetriever as Retriever
 from app.services.reranker_service import Reranker
 
 

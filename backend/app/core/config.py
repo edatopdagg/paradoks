@@ -157,3 +157,102 @@ else:
             / _v3_catalog_path
         ).resolve()
     )
+# ---------------------------------------------------------
+# PRIORITY / FRONT-SHELF RETRIEVAL
+# ---------------------------------------------------------
+
+PRIORITY_RETRIEVAL_ENABLED = (
+    os.getenv(
+        "PRIORITY_RETRIEVAL_ENABLED",
+        "0",
+    )
+    .strip()
+    .casefold()
+    in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+)
+
+
+def _resolve_optional_path(
+    raw_value: str,
+) -> str:
+
+    clean_value = (
+        raw_value
+        or ""
+    ).strip()
+
+    if not clean_value:
+        return ""
+
+    candidate = Path(
+        clean_value
+    )
+
+    if candidate.is_absolute():
+        return str(
+            candidate
+        )
+
+    return str(
+        (
+            BASE_DIR
+            / candidate
+        ).resolve()
+    )
+
+
+PRIORITY_CHROMA_DB_PATH = (
+    _resolve_optional_path(
+        os.getenv(
+            "PRIORITY_CHROMA_DB_PATH",
+            "",
+        )
+    )
+)
+
+PRIORITY_CATALOG_PATH = (
+    _resolve_optional_path(
+        os.getenv(
+            "PRIORITY_CATALOG_PATH",
+            "",
+        )
+    )
+)
+
+PRIORITY_CHROMA_COLLECTION_NAME = os.getenv(
+    "PRIORITY_CHROMA_COLLECTION_NAME",
+    "telecom_standards_priority",
+)
+
+PRIORITY_ROUTER_TOP_K = int(
+    os.getenv(
+        "PRIORITY_ROUTER_TOP_K",
+        "3",
+    )
+)
+
+PRIORITY_ROUTER_MIN_SCORE = float(
+    os.getenv(
+        "PRIORITY_ROUTER_MIN_SCORE",
+        "0.86",
+    )
+)
+
+PRIORITY_MIN_RESULTS = int(
+    os.getenv(
+        "PRIORITY_MIN_RESULTS",
+        "2",
+    )
+)
+
+PRIORITY_MAX_DISTANCE = float(
+    os.getenv(
+        "PRIORITY_MAX_DISTANCE",
+        "0.30",
+    )
+)

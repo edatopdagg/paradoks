@@ -206,16 +206,81 @@ def allows_deterministic_fast_path(
     if is_multi_part_question(question):
         return False
 
+    value = (
+        _normalize_space(
+            question
+        ).casefold()
+    )
+
+    # -----------------------------------------------------
+    # EXACT REFERENCE-POINT IDENTITY
+    # -----------------------------------------------------
+    #
+    # Örnek:
+    # "UE ile AMF arasındaki referans noktası hangisidir?"
+    #
+    # Bu soru açıklama istemez; tek bir kimlik ister.
+    #
+    # Buna karşılık:
+    # "N1 üzerinden hangi sinyalleşme taşınır?"
+    # bu kurala girmez ve normal evidence pipeline'ında kalır.
+    # -----------------------------------------------------
+
+    if (
+        answer_type
+        == "ARAYÜZ / REFERANS NOKTASI"
+    ):
+
+        exact_reference_identity_patterns = (
+            (
+                r"\breferans\s+nokt\w*"
+                r"[^?]{0,50}"
+                r"\b(?:hangisi\w*|nedir|adı\s+ne)\b"
+            ),
+            (
+                r"\b\w+\s+ile\s+\w+\s+arasındaki\s+"
+                r"referans\s+nokt\w*"
+            ),
+            (
+                r"\bwhich(?:\s+\w+){0,4}\s+"
+                r"reference\s+point\b"
+            ),
+        )
+
+        if any(
+            re.search(
+                pattern,
+                value,
+                flags=re.IGNORECASE,
+            )
+            is not None
+            for pattern
+            in exact_reference_identity_patterns
+        ):
+            return True
+
+    # Açıklama / amaç / içerik soruları
+    # deterministic kısa yola alınmaz.
     if is_explanatory_question(question):
         return False
 
-    patterns = _EXACT_LOOKUP_PATTERNS.get(answer_type, ())
+    patterns = (
+        _EXACT_LOOKUP_PATTERNS.get(
+            answer_type,
+            (),
+        )
+    )
+
     if not patterns:
         return False
 
-    value = _normalize_space(question).casefold()
     return any(
-        re.search(pattern, value, flags=re.IGNORECASE) is not None
+        re.search(
+            pattern,
+            value,
+            flags=re.IGNORECASE,
+        )
+        is not None
         for pattern in patterns
     )
 
