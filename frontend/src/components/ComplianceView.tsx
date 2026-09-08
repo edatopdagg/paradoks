@@ -92,6 +92,360 @@ function formatFileSize(
   ).toFixed(1)} MB`
 }
 
+
+const COMPLIANCE_SIGNAL_LABELS: Record<
+  string,
+  string
+> = {
+  x86: "Standart x86 sunucu deste?i",
+  vmware: "VMware platform deste?i",
+  nutanix: "Nutanix platform deste?i",
+
+  active_active: "Aktif-Aktif mimari",
+  active_standby: "Aktif-Standby mimari",
+  geo_redundancy: "Co?rafi yedeklilik",
+  availability: "Sistem kullan?labilirli?i",
+  scalability: "?l?eklenebilirlik",
+  replication: "Replikasyon",
+  backup: "Yedekleme",
+
+  ipv6: "IPv6 deste?i",
+  http2: "HTTP/2 deste?i",
+
+  tls: "TLS deste?i",
+  tls_12: "TLS 1.2 deste?i",
+  tls_13: "TLS 1.3 deste?i",
+  https: "HTTPS deste?i",
+  mutual_tls: "Kar??l?kl? TLS (mTLS)",
+
+  aes_256: "AES-256 ?ifreleme",
+  two_factor_authentication:
+    "?ift fakt?rl? kimlik do?rulama",
+
+  rbac: "Rol tabanl? eri?im kontrol? (RBAC)",
+  account_lockout: "Hesap kilitleme",
+  ldap: "LDAP entegrasyonu",
+  active_directory: "Active Directory entegrasyonu",
+  central_directory: "Merkezi dizin entegrasyonu",
+
+  syslog: "Syslog deste?i",
+  siem_integration: "SIEM entegrasyonu",
+  rest_api: "REST API deste?i",
+}
+
+
+function complianceSignalLabel(
+  signal: string,
+): string {
+  const clean = (
+    signal
+    || ""
+  ).trim()
+
+  if (!clean) {
+    return ""
+  }
+
+  const known = (
+    COMPLIANCE_SIGNAL_LABELS[
+      clean
+    ]
+  )
+
+  if (known) {
+    return known
+  }
+
+  return clean
+    .replaceAll(
+      "_",
+      " ",
+    )
+    .replace(
+      /\b\w/g,
+      (value) =>
+        value.toUpperCase(),
+    )
+}
+
+
+function complianceGapSignals(
+  status: string,
+  missingSignals: string[] = [],
+  notSupportedSignals: string[] = [],
+  reviewSignals: string[] = [],
+): string[] {
+  const raw = (
+    status === "NC"
+      ? [
+          ...notSupportedSignals,
+          ...missingSignals,
+        ]
+      : [
+          ...reviewSignals,
+          ...missingSignals,
+        ]
+  )
+
+  return Array.from(
+    new Set(
+      raw
+        .map(
+          complianceSignalLabel,
+        )
+        .filter(Boolean),
+    ),
+  )
+}
+
+
+
+function normalizeComplianceText(
+  value: string,
+): string {
+  return (value || "")
+    .normalize("NFKD")
+    .replace(
+      /[\u0300-\u036f]/g,
+      "",
+    )
+    .replaceAll("\u0131", "i")
+    .replaceAll("\u015f", "s")
+    .replaceAll("\u015e", "s")
+    .replaceAll("\u00e7", "c")
+    .replaceAll("\u00c7", "c")
+    .replaceAll("\u011f", "g")
+    .replaceAll("\u011e", "g")
+    .replaceAll("\u00fc", "u")
+    .replaceAll("\u00dc", "u")
+    .replaceAll("\u00f6", "o")
+    .replaceAll("\u00d6", "o")
+    .toLowerCase()
+}
+
+
+function complianceGapReason(
+  status: string,
+  requirement: string,
+  missingSignals: string[] = [],
+  notSupportedSignals: string[] = [],
+): string {
+  const normalized = (
+    normalizeComplianceText(
+      requirement,
+    )
+  )
+
+  const evidenceRequirement = (
+    normalized.includes("referans")
+    || normalized.includes("tedarikci")
+    || normalized.includes("uretici")
+    || normalized.includes("ticari kurulum")
+    || normalized.includes("liste sun")
+    || normalized.includes("dokuman")
+    || normalized.includes("belge")
+    || normalized.includes("sertifika")
+  )
+
+  if (
+    status === "REVIEW"
+    && evidenceRequirement
+  ) {
+    return (
+      "Bu madde yaln\u0131zca bir \u00fcr\u00fcn "
+      + "\u00f6zelli\u011fi istemiyor; referans, "
+      + "tedarik\u00e7i, kurulum veya do\u011frulay\u0131c\u0131 "
+      + "kan\u0131t talep ediyor. Y\u00fcklenen \u015firket "
+      + "\u00f6zellik dosyalar\u0131nda bu bilgiler "
+      + "yeterli de\u011fil."
+    )
+  }
+
+  if (
+    status === "NC"
+    && notSupportedSignals.length > 0
+  ) {
+    return (
+      "\u015eirket \u00f6zelliklerinde bu maddeyle "
+      + "ilgili bir veya daha fazla teknik yetenek "
+      + "a\u00e7\u0131k\u00e7a desteklenmiyor."
+    )
+  }
+
+  if (
+    status === "NC"
+    && missingSignals.length > 0
+  ) {
+    return (
+      "\u015eartnamenin istedi\u011fi teknik "
+      + "yeteneklerin tamam\u0131 \u015firket "
+      + "\u00f6zelliklerinde bulunamad\u0131."
+    )
+  }
+
+  if (status === "NC") {
+    return (
+      "Y\u00fcklenen \u015firket \u00f6zellik "
+      + "dosyalar\u0131nda bu gereksinimi "
+      + "do\u011frulayan yeterli yetenek veya "
+      + "kan\u0131t bulunamad\u0131."
+    )
+  }
+
+  return (
+    "Mevcut \u015firket bilgilerinden bu madde "
+    + "i\u00e7in kesin bir uygunluk karar\u0131 "
+    + "\u00fcretilemiyor; ek do\u011frulama gerekiyor."
+  )
+}
+
+
+function complianceRequirementActions(
+  requirement: string,
+): string[] {
+  const normalized = (
+    normalizeComplianceText(
+      requirement,
+    )
+  )
+
+  const actions: string[] = []
+
+  if (
+    normalized.includes("x86")
+    && (
+      normalized.includes(
+        "donanim uretici",
+      )
+      || normalized.includes(
+        "farkli uretici",
+      )
+    )
+  ) {
+    actions.push(
+      "Donan\u0131m \u00fcreticisinden ba\u011f\u0131ms\u0131z standart x86 sunucu kurulum deste\u011fi",
+    )
+  }
+
+  if (
+    normalized.includes("vmware")
+    || normalized.includes("nutanix")
+  ) {
+    actions.push(
+      "VMware / Nutanix gibi sanalla\u015ft\u0131rma platformlar\u0131nda kurulum deste\u011fi",
+    )
+  }
+
+  if (
+    normalized.includes("referans listesi")
+  ) {
+    actions.push(
+      "Gerekli entegrasyonlar\u0131 ve \u00fc\u00e7\u00fcnc\u00fc taraf \u00fcretici / tedarik\u00e7ileri g\u00f6steren referans listesi",
+    )
+  }
+
+  if (
+    normalized.includes("aktif abone")
+  ) {
+    actions.push(
+      "\u015eartnamede istenen minimum aktif abone kapasitesini kar\u015f\u0131layan operat\u00f6r referans\u0131",
+    )
+  }
+
+  if (
+    normalized.includes("ticari kurulum")
+  ) {
+    actions.push(
+      "\u015eartnamede istenen minimum ticari kurulum say\u0131s\u0131n\u0131 do\u011frulayan referans / kan\u0131t",
+    )
+  }
+
+  if (
+    normalized.includes("web")
+    && normalized.includes("gui")
+  ) {
+    actions.push(
+      "Web tabanl\u0131 grafik kullan\u0131c\u0131 aray\u00fcz\u00fc (GUI) deste\u011fi",
+    )
+  }
+
+  if (
+    normalized.includes("ipv6")
+  ) {
+    actions.push(
+      "IPv6 deste\u011fi",
+    )
+  }
+
+  if (
+    normalized.includes("http/2")
+    || normalized.includes("http2")
+  ) {
+    actions.push(
+      "HTTP/2 deste\u011fi",
+    )
+  }
+
+  if (
+    normalized.includes("aktif-aktif")
+    || normalized.includes("aktif aktif")
+  ) {
+    actions.push(
+      "Aktif-Aktif mimari deste\u011fi",
+    )
+  }
+
+  return Array.from(
+    new Set(actions),
+  )
+}
+
+
+function complianceGapItems(
+  requirement: string,
+  status: string,
+  missingSignals: string[] = [],
+  notSupportedSignals: string[] = [],
+  reviewSignals: string[] = [],
+): string[] {
+  const signalItems = (
+    complianceGapSignals(
+      status,
+      missingSignals,
+      notSupportedSignals,
+      reviewSignals,
+    )
+  )
+
+  if (signalItems.length > 0) {
+    return signalItems
+  }
+
+  const requirementItems = (
+    complianceRequirementActions(
+      requirement,
+    )
+  )
+
+  if (requirementItems.length > 0) {
+    return requirementItems
+  }
+
+  return [
+    status === "NC"
+      ? (
+        "Bu gereksinimi kar\u015f\u0131layan teknik "
+        + "yetenek veya do\u011frulay\u0131c\u0131 kan\u0131t"
+      )
+      : (
+        "Bu gereksinimin kar\u015f\u0131lan\u0131p "
+        + "kar\u015f\u0131lanmad\u0131\u011f\u0131n\u0131 "
+        + "g\u00f6steren a\u00e7\u0131k \u015firket bilgisi"
+      ),
+  ]
+}
+
+
 function ComplianceView({
   onBack,
 }: ComplianceViewProps) {
@@ -554,21 +908,27 @@ function ComplianceView({
               <strong>
                 {result.summary.fully_compliant}
               </strong>
-              <span>FC</span>
+              <span>
+                {"Tam Kar\u015f\u0131lan\u0131yor"}
+              </span>
             </div>
 
             <div>
               <strong>
                 {result.summary.partially_compliant}
               </strong>
-              <span>PC</span>
+              <span>
+                {"K\u0131smen Kar\u015f\u0131lan\u0131yor"}
+              </span>
             </div>
 
             <div>
               <strong>
                 {result.summary.non_compliant}
               </strong>
-              <span>NC</span>
+              <span>
+                {"Kar\u015f\u0131lanm\u0131yor"}
+              </span>
             </div>
 
             <div>
@@ -576,7 +936,7 @@ function ComplianceView({
                 {result.summary.manual_review}
               </strong>
               <span>
-                {"\u0130nceleme"}
+                {"\u0130nceleme Gerekli"}
               </span>
             </div>
 
@@ -657,40 +1017,114 @@ function ComplianceView({
                         </span>
                       </td>
 
-                      <td>
-                        {item.evidence
-                          ? (
-                            <>
-                              <div>
-                                {item.evidence.text}
-                              </div>
+                        <td>
+                          {item.evidence
+                            ? (
+                              <>
+                                <div>
+                                  {item.evidence.text}
+                                </div>
 
-                              <div className="compliance-evidence-meta">
-                                <span>
-                                  {
-                                    item.evidence.source_filename
-                                    || "Kaynak dosya bilinmiyor"
-                                  }
-                                </span>
-
-                                {item.evidence.source_page !== null && (
+                                <div className="compliance-evidence-meta">
                                   <span>
                                     {
-                                      "Sayfa "
-                                      + item.evidence.source_page
+                                      item.evidence.source_filename
+                                      || "Kaynak dosya bilinmiyor"
                                     }
                                   </span>
-                                )}
-                              </div>
 
-                              <small>
-                                {"Benzerlik: "}
-                                {item.evidence.score}
-                              </small>
-                            </>
-                          )
-                          : "\u2014"}
-                      </td>
+                                  {item.evidence.source_page !== null && (
+                                    <span>
+                                      {
+                                        "Sayfa "
+                                        + item.evidence.source_page
+                                      }
+                                    </span>
+                                  )}
+                                </div>
+
+                                <small>
+                                  {"Benzerlik: "}
+                                  {item.evidence.score}
+                                </small>
+                              </>
+                            )
+                            : (
+                              <div
+                                className={
+                                  `compliance-no-evidence no-evidence-${item.status.toLowerCase()}`
+                                }
+                              >
+                                <strong>
+                                  {
+                                    item.status === "NC"
+                                      ? "Do\u011frulanabilir kar\u015f\u0131l\u0131k bulunamad\u0131"
+                                      : "Manuel do\u011frulama gerekiyor"
+                                  }
+                                </strong>
+
+                                <div className="compliance-gap-content">
+                                  <div className="compliance-gap-reason">
+                                    <span className="compliance-gap-title">
+                                      {"Neden?"}
+                                    </span>
+
+                                    <span>
+                                      {complianceGapReason(
+                                        item.status,
+                                        item.requirement,
+                                        item.missing_signals,
+                                        item.not_supported_signals,
+                                      )}
+                                    </span>
+                                  </div>
+
+                                  <div>
+                                    <span className="compliance-gap-title">
+                                      {
+                                        item.status === "NC"
+                                          ? "Edinilmesi / tamamlanmas\u0131 gerekenler"
+                                          : "Do\u011frulanmas\u0131 / haz\u0131rlanmas\u0131 gerekenler"
+                                      }
+                                    </span>
+
+                                    <ul className="compliance-gap-list">
+                                      {complianceGapItems(
+                                        item.requirement,
+                                        item.status,
+                                        item.missing_signals,
+                                        item.not_supported_signals,
+                                        item.review_signals,
+                                      ).map(
+                                        (gapItem) => (
+                                          <li key={gapItem}>
+                                            {gapItem}
+                                          </li>
+                                        ),
+                                      )}
+                                    </ul>
+                                  </div>
+
+                                  <small className="compliance-gap-action">
+                                    {
+                                      item.status === "NC"
+                                        ? (
+                                          "Bu yetenek zaten mevcutsa \u015firket "
+                                          + "\u00f6zellik dosyas\u0131na a\u00e7\u0131k\u00e7a ekleyin; "
+                                          + "mevcut de\u011filse edinim veya geli\u015ftirme "
+                                          + "plan\u0131na al\u0131n."
+                                        )
+                                        : (
+                                          "Gerekli bilgi veya kan\u0131t topland\u0131ktan "
+                                          + "sonra \u015firket \u00f6zellik dosyas\u0131na "
+                                          + "a\u00e7\u0131k ve do\u011frulanabilir bi\u00e7imde eklenmeli."
+                                        )
+                                    }
+                                  </small>
+                                </div>
+                              </div>
+                            )}
+                        </td>
 
                       <td>
                         {item.explanation}

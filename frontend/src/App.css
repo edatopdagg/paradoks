@@ -3382,3 +3382,188 @@
   background:
     #1b2038;
 }
+
+
+
+/* COMPLIANCE EMPTY EVIDENCE */
+
+.compliance-no-evidence {
+  display: flex;
+  max-width: 330px;
+
+  flex-direction: column;
+  gap: 7px;
+
+  padding:
+    11px
+    13px;
+
+  border:
+    1px solid;
+
+  border-radius: 12px;
+
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.compliance-no-evidence strong {
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.compliance-no-evidence span {
+  opacity: 0.88;
+}
+
+.no-evidence-review {
+  border-color:
+    #efc36f;
+
+  background:
+    #fff8e8;
+
+  color:
+    #80500b;
+}
+
+.no-evidence-nc {
+  border-color:
+    #efaaaa;
+
+  background:
+    #fff1f1;
+
+  color:
+    #962d2d;
+}
+
+.no-evidence-pc {
+  border-color:
+    #9abce8;
+
+  background:
+    #eef6ff;
+
+  color:
+    #345f94;
+}
+
+
+/* DARK MODE */
+
+[data-theme="dark"]
+.no-evidence-review {
+  border-color:
+    #6d5630;
+
+  background:
+    #2c2519;
+
+  color:
+    #edc47a;
+}
+
+[data-theme="dark"]
+.no-evidence-nc {
+  border-color:
+    #6f4046;
+
+  background:
+    #301d22;
+
+  color:
+    #f2a5ad;
+}
+
+[data-theme="dark"]
+.no-evidence-pc {
+  border-color:
+    #3d5376;
+
+  background:
+    #1c2838;
+
+  color:
+    #a9c7ef;
+}
+
+
+
+/* COMPLIANCE ACTIONABLE GAP */
+
+.compliance-gap-content {
+  display: flex;
+
+  flex-direction: column;
+  gap: 9px;
+}
+
+.compliance-gap-title {
+  font-weight: 750;
+}
+
+.compliance-gap-list {
+  display: flex;
+
+  flex-direction: column;
+  gap: 5px;
+
+  margin:
+    0;
+
+  padding-left:
+    18px;
+}
+
+.compliance-gap-list li {
+  line-height: 1.4;
+}
+
+.compliance-gap-fallback {
+  line-height: 1.45;
+}
+
+.compliance-gap-requirement {
+  padding-top: 8px;
+
+  border-top:
+    1px solid
+    currentColor;
+
+  opacity: 0.92;
+
+  line-height: 1.45;
+}
+
+.compliance-gap-requirement strong {
+  font-size: inherit;
+}
+
+.compliance-gap-action {
+  display: block;
+
+  padding-top: 2px;
+
+  font-size: 10px;
+  line-height: 1.5;
+
+  opacity: 0.8;
+}
+
+
+
+/* COMPLIANCE GAP REASON */
+
+.compliance-gap-reason {
+  display: flex;
+
+  flex-direction: column;
+  gap: 4px;
+}
+
+.compliance-gap-reason > span:last-child {
+  line-height: 1.5;
+
+  opacity: 0.9;
+}

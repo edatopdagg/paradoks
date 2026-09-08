@@ -196,6 +196,11 @@ export type ComplianceResult = {
   requirement: string
   requirement_values: Record<string, string>
   status: "FC" | "PC" | "NC" | "REVIEW"
+  fully_supported_signals: string[]
+  partially_supported_signals: string[]
+  missing_signals: string[]
+  not_supported_signals: string[]
+  review_signals: string[]
   best_score: number
   evidence: ComplianceEvidence | null
   candidates: ComplianceEvidence[]

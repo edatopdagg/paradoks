@@ -2861,7 +2861,7 @@ def _atomic_capability_terms(
         ),
         (
             "availability",
-            r"\bkullanilabilir\w*\b",
+            r"\bkullanilabilirli(?:k|g)\w*\b",
         ),
         (
             "aes_256",
@@ -2936,6 +2936,14 @@ def _atomic_capability_terms(
         # Mesaj fonksiyonları
         ("message_schedule", r"\bmessage schedul\w*\b|\bmesaj zamanla\w*\b|\bschedule function\b"),
         ("message_repeat", r"\brepeat function\b|\brepeated message\b|\bmessage repeat\w*\b|\btekrarli mesaj\b|\btekrarli mesaj yayin\w*\b"),
+        (
+            "message_segmentation",
+            r"\bsegmentation\b"
+            r"|\bmessage segment\w*\b"
+            r"|\bsegmented message\w*\b"
+            r"|\bmesaj bolumle\w*\b"
+            r"|\buzun mesaj\w*[^|.;]*bolumle\w*\b",
+        ),
         ("message_priority", r"\bpriority for alerts\b|\bmessage priorit\w*\b|\bmesaj oncelik\w*\b"),
         ("overload_protection", r"\boverload protection\b|\basiri yuk koruma\w*\b"),
         ("message_update", r"\bmessage update\b|\bmesaj guncelle\w*\b|\baktif uyari mesaj\w*[^|.;]*guncellen\w*\b|\benhanced message update\b"),
@@ -3393,6 +3401,35 @@ def _aggregate_requirement_evidence(
 
 
 
+def _guard_semantic_only_fc(
+    *,
+    status: str,
+    requirement_kind: str,
+    requirement_text: str,
+    aggregate: dict[str, Any] | None,
+) -> str:
+    """
+    Atom veya dokuman kaniti cikmayan teknik bir
+    requirement yalnizca semantic benzerlik ve
+    Fully Supported etiketiyle otomatik FC olamaz.
+    """
+
+    if (
+        aggregate is None
+        and status == "FC"
+        and requirement_kind == "CAPABILITY"
+        and not _document_ids(
+            requirement_text
+        )
+        and not _atomic_capability_terms(
+            requirement_text
+        )
+    ):
+        return "REVIEW"
+
+    return status
+
+
 def _select_display_evidence(
     *,
     status: str,
@@ -3835,6 +3872,13 @@ def compare_documents(
 
         # Bilgi/dokümantasyon ve ticari teyit maddelerini "üründe yok"
         # diye NC'ye düşürme. Bu maddeler teklif cevabı/manuel teyit ister.
+        status = _guard_semantic_only_fc(
+            status=status,
+            requirement_kind=requirement_kind,
+            requirement_text=requirement_text,
+            aggregate=aggregate,
+        )
+
         if requirement_kind == "INFO":
             if status == "NC":
                 status = "REVIEW"
