@@ -4,3 +4,12 @@ chromadb==1.5.9
 sentence-transformers==5.6.1
 requests==2.34.2
 python-dotenv==1.2.2
+openpyxl==3.1.5
+python-multipart==0.0.20
+pypdf==6.17.0
+python-docx==1.2.0
+python-pptx==1.0.2
+pillow==12.3.0
+pytesseract==0.3.13
+pymupdf==1.28.2
+xlrd==2.0.2

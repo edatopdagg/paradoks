@@ -1,10 +1,9 @@
-from __future__ import annotations
-
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from app.core.config import (
+    PRIORITY_CATALOG_PATH,
     V3_CATALOG_PATH,
 )
 
@@ -20,26 +19,19 @@ def _read_only_uri(
     )
 
 
-def get_source_clause(
+def _get_source_clause_from_catalog(
     *,
     version_id: str,
     clause_id: str,
-    catalog_path: str | Path | None = None,
-) -> dict[str, Any]:
-    resolved_path = Path(
-        catalog_path
-        if catalog_path is not None
-        else V3_CATALOG_PATH
-    )
+    catalog_path: Path,
+) -> dict[str, Any] | None:
 
-    if not resolved_path.is_file():
-        raise FileNotFoundError(
-            str(resolved_path)
-        )
+    if not catalog_path.is_file():
+        return None
 
     connection = sqlite3.connect(
         _read_only_uri(
-            resolved_path
+            catalog_path
         ),
         uri=True,
     )
@@ -114,13 +106,109 @@ def get_source_clause(
         connection.close()
 
     if row is None:
-        raise KeyError(
-            (
-                version_id,
-                clause_id,
+        return None
+
+    return dict(row)
+
+
+def get_source_clause(
+    *,
+    version_id: str,
+    clause_id: str,
+    catalog_path: str | Path | None = None,
+) -> dict[str, Any]:
+
+    # Explicit catalog istendiyse yaln?zca onu kullan.
+    if catalog_path is not None:
+
+        resolved_path = Path(
+            catalog_path
+        )
+
+        if not resolved_path.is_file():
+            raise FileNotFoundError(
+                str(resolved_path)
+            )
+
+        result = (
+            _get_source_clause_from_catalog(
+                version_id=version_id,
+                clause_id=clause_id,
+                catalog_path=resolved_path,
             )
         )
 
-    return dict(
-        row
+        if result is None:
+            raise KeyError(
+                (
+                    version_id,
+                    clause_id,
+                )
+            )
+
+        return result
+
+    # --------------------------------------------------
+    # NORMAL RUNTIME
+    #
+    # 1. Ana V3 katalog
+    # 2. Priority/front-shelf katalog
+    # --------------------------------------------------
+
+    catalog_paths = [
+        Path(V3_CATALOG_PATH),
+    ]
+
+    if PRIORITY_CATALOG_PATH:
+        priority_path = Path(
+            PRIORITY_CATALOG_PATH
+        )
+
+        if (
+            priority_path
+            not in catalog_paths
+        ):
+            catalog_paths.append(
+                priority_path
+            )
+
+    existing_catalog = False
+
+    for resolved_path in catalog_paths:
+
+        if not resolved_path.is_file():
+            continue
+
+        existing_catalog = True
+
+        result = (
+            _get_source_clause_from_catalog(
+                version_id=version_id,
+                clause_id=clause_id,
+                catalog_path=resolved_path,
+            )
+        )
+
+        if result is not None:
+
+            print(
+                "[SOURCE] Clause resolved from:",
+                resolved_path,
+            )
+
+            return result
+
+    if not existing_catalog:
+        raise FileNotFoundError(
+            ", ".join(
+                str(path)
+                for path in catalog_paths
+            )
+        )
+
+    raise KeyError(
+        (
+            version_id,
+            clause_id,
+        )
     )

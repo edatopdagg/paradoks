@@ -1,4 +1,4 @@
-import {
+﻿import {
   useEffect,
   useMemo,
   useRef,
@@ -10,6 +10,8 @@ import AppHeader from "./components/AppHeader"
 import ChatView, {
   type Message,
 } from "./components/ChatView"
+import ComplianceView from "./components/ComplianceView"
+import ModeSelector from "./components/ModeSelector"
 import HistoryView from "./components/HistoryView"
 import Sidebar, {
   type ActiveView,
@@ -31,6 +33,16 @@ import {
 } from "./services/historyStorage"
 
 import "./App.css"
+
+type WorkspaceMode =
+  | "telecom"
+  | "radio"
+  | "compliance"
+  | null
+
+type ThemeMode =
+  | "light"
+  | "dark"
 
 function createConversationId(): string {
   if (
@@ -56,10 +68,33 @@ function createConversationTitle(
     return normalizedQuestion
   }
 
-  return `${normalizedQuestion.slice(0, 58)}…`
+  return `${normalizedQuestion.slice(0, 58)}â€¦`
 }
 
 function App() {
+  const [
+    workspaceMode,
+    setWorkspaceMode,
+  ] = useState<WorkspaceMode>(null)
+
+  const [
+    theme,
+    setTheme,
+  ] = useState<ThemeMode>(() => {
+    try {
+      return (
+        window.localStorage.getItem(
+          "paradoks-theme",
+        ) === "dark"
+          ? "dark"
+          : "light"
+      )
+    } catch {
+      return "light"
+    }
+  })
+
+
   const [question, setQuestion] = useState("")
   const [messages, setMessages] = useState<Message[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -115,6 +150,24 @@ function App() {
 
     return Array.from(uniqueSources.values())
   }, [messages])
+
+
+  useEffect(() => {
+    document.documentElement.dataset.theme =
+      theme
+
+    document.documentElement.style.colorScheme =
+      theme
+
+    try {
+      window.localStorage.setItem(
+        "paradoks-theme",
+        theme,
+      )
+    } catch {
+      // Tema mevcut oturumda ?al??maya devam eder.
+    }
+  }, [theme])
 
   useEffect(() => {
     saveConversations(conversations)
@@ -267,6 +320,9 @@ function App() {
       const response = await sendChatMessage(
         trimmedQuestion,
         resolvedConversationId,
+        workspaceMode === "radio"
+          ? "radio"
+          : "telecom",
       )
 
       setApiStatus("online")
@@ -289,7 +345,7 @@ function App() {
       )
     } catch (error) {
       console.error(
-        "Sohbet isteği başarısız oldu:",
+        "Sohbet isteÄŸi baÅŸarÄ±sÄ±z oldu:",
         error,
       )
 
@@ -299,7 +355,7 @@ function App() {
         id: Date.now() + 1,
         role: "assistant",
         content:
-          "Backend servisine ulaşılamadı. Lütfen FastAPI sunucusunun çalıştığını kontrol edin.",
+          "Backend servisine ulaÅŸÄ±lamadÄ±. LÃ¼tfen FastAPI sunucusunun Ã§alÄ±ÅŸtÄ±ÄŸÄ±nÄ± kontrol edin.",
       }
 
       setMessages((currentMessages) => [
@@ -360,7 +416,7 @@ function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" data-theme={theme}>
       <Sidebar
         activeView={activeView}
         isLoading={isLoading}
@@ -374,22 +430,57 @@ function App() {
         className="chat-page"
       >
         <AppHeader
-          activeView={activeView}
-          isSourcesPanelOpen={isSourcesPanelOpen}
-          onOpenSourcesPanel={() =>
-            setIsSourcesPanelOpen(true)
-          }
-        />
+            activeView={activeView}
+            workspaceMode={workspaceMode}
+            theme={theme}
+            sourceCount={
+              conversationSources.length
+            }
+            isSourcesPanelOpen={
+              isSourcesPanelOpen
+            }
+            onOpenSourcesPanel={() =>
+              setIsSourcesPanelOpen(true)
+            }
+            onChangeWorkspace={() => {
+              setWorkspaceMode(null)
+              setIsSourcesPanelOpen(false)
+            }}
+            onToggleTheme={() =>
+              setTheme(
+                (currentTheme) =>
+                  currentTheme === "dark"
+                    ? "light"
+                    : "dark",
+              )
+            }
+          />
 
         {activeView === "chat" && (
-          <ChatView
-            question={question}
-            messages={messages}
-            isLoading={isLoading}
-            onQuestionChange={setQuestion}
-            onSubmit={handleSubmit}
-          />
-        )}
+            <>
+              {workspaceMode === null ? (
+                <ModeSelector
+                  onSelect={setWorkspaceMode}
+                />
+              ) : workspaceMode === "compliance" ? (
+                <ComplianceView
+                  onBack={() =>
+                    setWorkspaceMode(null)
+                  }
+                />
+              ) : (
+                <>
+                  <ChatView
+                    question={question}
+                    messages={messages}
+                    isLoading={isLoading}
+                    onQuestionChange={setQuestion}
+                    onSubmit={handleSubmit}
+                  />
+                </>
+              )}
+            </>
+          )}
 
         {activeView === "sources" && (
           <SourcesView

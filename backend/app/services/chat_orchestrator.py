@@ -13,6 +13,7 @@ from app.services.question_planner import (
 
 def generate_reply(
     message: str,
+    domain: str = "telecom",
 ) -> dict[str, Any]:
     """
     Mevcut RAG hattını yalnızca gerçek bir
@@ -24,7 +25,8 @@ def generate_reply(
     )
 
     return legacy_generate_reply(
-        message
+        message,
+        domain=domain,
     )
 
 
@@ -140,6 +142,14 @@ def _combine_answers(
 def _needs_conversation_context(
     question: str,
 ) -> bool:
+    """
+    Only explicit follow-up wording may pull previous
+    conversation text into retrieval.
+
+    Words such as "ayni/same" in the middle of an otherwise
+    independent technical question must not activate memory.
+    """
+
     value = (
         question
         or ""
@@ -157,14 +167,25 @@ def _needs_conversation_context(
         "bunun ",
         "bunu ",
         "buna ",
+        "bunda ",
         "bundan ",
+        "bu ",
         "onun ",
         "onu ",
         "ona ",
+        "o ",
+        "ayn\u0131 ",
         "what about ",
         "how about ",
         "and what ",
         "and how ",
+        "this ",
+        "that ",
+        "it ",
+        "its ",
+        "these ",
+        "those ",
+        "same ",
     )
 
     if value.startswith(
@@ -172,23 +193,24 @@ def _needs_conversation_context(
     ):
         return True
 
-    pronoun_pattern = re.compile(
-        (
-            r"\b("
-            r"bu|bunun|bunu|buna|bunda|bundan|"
-            r"o|onun|onu|ona|aynı|"
-            r"this|that|it|its|these|those|same"
-            r")\b"
-        ),
-        flags=re.IGNORECASE,
-    )
+    short_follow_ups = {
+        "neden",
+        "neden?",
+        "ni\u00e7in",
+        "ni\u00e7in?",
+        "nas\u0131l",
+        "nas\u0131l?",
+        "why",
+        "why?",
+        "how",
+        "how?",
+        "hangisi",
+        "hangisi?",
+        "which one",
+        "which one?",
+    }
 
-    return bool(
-        pronoun_pattern.search(
-            value
-        )
-    )
-
+    return value in short_follow_ups
 
 def _build_contextual_question(
     question: str,
@@ -222,7 +244,17 @@ def _build_contextual_question(
                 user_message
             )
 
-        if assistant_message:
+        assistant_normalized = (
+            assistant_message.casefold()
+        )
+
+        if (
+            assistant_message
+            and "yeterli standart bilgisi bulunamad"
+            not in assistant_normalized
+            and "not enough standard information"
+            not in assistant_normalized
+        ):
             context_parts.append(
                 assistant_message
             )
@@ -257,6 +289,7 @@ def _build_contextual_question(
 def generate_chat_response(
     message: str,
     conversation_id: str | None = None,
+    domain: str = "telecom",
 ) -> dict[str, Any]:
     plan = build_question_plan(
         message
@@ -304,7 +337,8 @@ def generate_chat_response(
         )
 
         result = generate_reply(
-            retrieval_question
+            retrieval_question,
+            domain=domain,
         )
 
         answer = str(

@@ -40,6 +40,7 @@ from app.services.lexical_search_service import (
     LexicalSearchService,
 )
 from app.services.tiered_retriever import TieredRetriever as Retriever
+from app.services.evidence_priority import prioritize_evidence
 from app.services.reranker_service import Reranker
 
 
@@ -141,7 +142,18 @@ def _select_prompt_results(
     results: list[dict[str, Any]],
     limit: int = PROMPT_TOP_K,
 ) -> list[dict[str, Any]]:
-    selected = results[:limit]
+    prioritized_results = (
+        prioritize_evidence(
+            question,
+            results,
+        )
+    )
+
+    selected = (
+        prioritized_results[
+            :limit
+        ]
+    )
 
     if len(selected) < 2 or is_multi_part_question(question):
         return selected
@@ -939,6 +951,295 @@ def _print_performance(
     print()
 
 
+
+def _recover_reference_point_semantic_candidates(
+    question: str,
+    candidates: list[dict[str, Any]],
+    limit: int = PROMPT_TOP_K,
+) -> list[dict[str, Any]]:
+    """
+    Recover strong reference-point evidence from the already
+    reranked semantic pool when lexical/FTS fallback is
+    unavailable.
+
+    Two safe routes exist:
+
+    1. Explicit technical support terms match
+       (for example N1 + NAS + UE + AMF).
+
+    2. No explicit endpoint terms exist in the question, but
+       a strongly reranked candidate contains the requested
+       reference point and a real relation/function statement
+       such as "between", "used to", "signalling", "convey",
+       "transfer", "connection" or "interface".
+
+    A bare statement such as
+       "N3 is a reference point in the 5G System."
+    is deliberately NOT sufficient.
+    """
+
+    if (
+        not candidates
+        or not _is_reference_point_question(
+            question
+        )
+    ):
+        return []
+
+    reference_queries = (
+        _reference_point_fts_queries(
+            question
+        )
+    )
+
+    if not reference_queries:
+        return []
+
+    terms: list[str] = []
+
+    for reference_query in reference_queries:
+        for term in re.findall(
+            r'"([^"]+)"',
+            reference_query,
+        ):
+            normalized = (
+                term.strip().upper()
+            )
+
+            if (
+                normalized
+                and normalized not in terms
+            ):
+                terms.append(
+                    normalized
+                )
+
+    if not terms:
+        return []
+
+    reference_point = terms[0]
+
+    support_terms = [
+        term
+        for term in terms[1:]
+        if term.casefold()
+        not in {
+            "reference point",
+        }
+    ]
+
+    strict_support_available = (
+        len(support_terms) >= 2
+    )
+
+    scored: list[
+        tuple[
+            float,
+            float,
+            dict[str, Any],
+        ]
+    ] = []
+
+    def contains_term(
+        value: str,
+        term: str,
+    ) -> bool:
+        return bool(
+            re.search(
+                rf"(?<![A-Z0-9])"
+                rf"{re.escape(term)}"
+                rf"(?![A-Z0-9])",
+                value,
+                flags=re.IGNORECASE,
+            )
+        )
+
+    relation_patterns = (
+        r"\bbetween\b",
+        r"\bused\s+to\b",
+        r"\bsupport(?:s|ed|ing)?\b",
+        r"\bsignall?ing\b",
+        r"\bconvey(?:s|ed|ing)?\b",
+        r"\btransfer(?:s|red|ring)?\b",
+        r"\bcarri(?:ed|es|y)\b",
+        r"\bconnect(?:ion|s|ed|ing)?\b",
+        r"\binterface\b",
+    )
+
+    for candidate in candidates:
+
+        metadata = (
+            candidate.get(
+                "metadata",
+                {},
+            )
+            or {}
+        )
+
+        candidate_text = " ".join(
+            str(value or "")
+            for value in (
+                candidate.get(
+                    "text",
+                    "",
+                ),
+                metadata.get(
+                    "clause_title",
+                    "",
+                ),
+                metadata.get(
+                    "clause",
+                    "",
+                ),
+                " ".join(
+                    candidate.get(
+                        "matched_queries",
+                        [],
+                    )
+                    or []
+                ),
+            )
+        )
+
+        if not contains_term(
+            candidate_text,
+            reference_point,
+        ):
+            continue
+
+        matched_support = [
+            term
+            for term in support_terms
+            if contains_term(
+                candidate_text,
+                term,
+            )
+        ]
+
+        has_relation = any(
+            re.search(
+                pattern,
+                candidate_text,
+                flags=re.IGNORECASE,
+            )
+            for pattern in relation_patterns
+        )
+
+        try:
+            rerank_score = float(
+                candidate.get(
+                    "rerank_score",
+                    float("-inf"),
+                )
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            rerank_score = float("-inf")
+
+        if strict_support_available:
+
+            if len(matched_support) < 2:
+                continue
+
+        else:
+
+            if (
+                rerank_score
+                < STRONG_RERANK_SCORE
+                or not has_relation
+            ):
+                continue
+
+        score = (
+            10.0
+            + 4.0
+            * len(matched_support)
+        )
+
+        if has_relation:
+            score += 8.0
+
+        if (
+            support_terms
+            and len(matched_support)
+            == len(support_terms)
+        ):
+            score += 6.0
+
+        if rerank_score != float("-inf"):
+            score += max(
+                rerank_score,
+                0.0,
+            )
+
+        try:
+            distance = float(
+                candidate.get(
+                    "distance",
+                    1.0,
+                )
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            distance = 1.0
+
+        scored.append(
+            (
+                score,
+                distance,
+                candidate,
+            )
+        )
+
+    scored.sort(
+        key=lambda item: (
+            -item[0],
+            item[1],
+        )
+    )
+
+    selected = [
+        item[2]
+        for item in scored[:limit]
+    ]
+
+    if selected:
+
+        print(
+            "[SEMANTIC RECOVERY] "
+            "Reference-point evidence:",
+            len(selected),
+        )
+
+        for index, result in enumerate(
+            selected,
+            start=1,
+        ):
+
+            metadata = (
+                result.get(
+                    "metadata",
+                    {},
+                )
+                or {}
+            )
+
+            print(
+                "[SEMANTIC RECOVERY] "
+                f"{index}. "
+                f"{metadata.get('org', 'Bilinmiyor')} "
+                f"{metadata.get('code', 'Bilinmiyor')} | "
+                f"Madde "
+                f"{metadata.get('clause', 'Bilinmiyor')}"
+            )
+
+    return selected
+
+
 def _fallback_scores_are_usable(
     results: list[dict[str, Any]],
 ) -> bool:
@@ -1017,6 +1318,7 @@ def _fallback_outperforms_normal_evidence(
 
 def generate_reply(
     message: str,
+    domain: str = "telecom",
 ) -> dict[str, Any]:
     total_start = time.perf_counter()
 
@@ -1041,6 +1343,7 @@ def generate_reply(
         query=message,
         top_k=RETRIEVAL_TOP_K,
         where=retrieval_where,
+        domain=domain,
     )
     retrieval_time = time.perf_counter() - retrieval_start
 
@@ -1107,7 +1410,7 @@ def generate_reply(
         )
 
     composer_start = time.perf_counter()
-    composition, rendered = _compose_and_render(question=message, chunks=reranked_results[:DOCUMENT_FALLBACK_COMPOSER_TOP_K])
+    composition, rendered = _compose_and_render(question=message, chunks=prioritize_evidence(message, reranked_results)[:DOCUMENT_FALLBACK_COMPOSER_TOP_K])
     composer_time += time.perf_counter() - composer_start
 
     print("[COMPOSER] Answer type:", composition.get("answer_type"))
@@ -1265,11 +1568,53 @@ def generate_reply(
         else:
             llm_results = _select_prompt_results(message, fallback_prompt_results)
 
-    precision_route_failed = fallback_required and precision_route and (
-        not fallback_prompt_results or not fallback_scores_usable
+    semantic_precision_results: list[
+        dict[str, Any]
+    ] = []
+
+    if (
+        fallback_required
+        and precision_route
+        and (
+            not fallback_prompt_results
+            or not fallback_scores_usable
+        )
+    ):
+        semantic_precision_results = (
+            _recover_reference_point_semantic_candidates(
+                message,
+                reranked_results,
+            )
+        )
+
+        if semantic_precision_results:
+            llm_results = (
+                _select_prompt_results(
+                    message,
+                    semantic_precision_results,
+                )
+            )
+
+            print(
+                "[EVIDENCE] Lexical precision fallback "
+                "bulunamadi; guclu semantic precision "
+                "evidence kullaniliyor."
+            )
+
+    precision_route_failed = (
+        fallback_required
+        and precision_route
+        and (
+            not fallback_prompt_results
+            or not fallback_scores_usable
+        )
+        and not semantic_precision_results
     )
 
-    evidence_usable = has_usable_evidence(message, llm_results)
+    evidence_usable = has_usable_evidence(
+        message,
+        llm_results,
+    )
 
     if precision_route_failed or not evidence_usable:
         print(

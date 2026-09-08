@@ -1,3 +1,5 @@
+export type ChatDomain = "telecom" | "radio"
+
 export type Source = {
   org: string
   code: string
@@ -77,6 +79,7 @@ const API_BASE_URL =
 export async function sendChatMessage(
   message: string,
   conversationId: string,
+  domain: ChatDomain = "telecom",
 ): Promise<ChatResponse> {
   const response = await fetch(
     `${API_BASE_URL}/chat`,
@@ -88,6 +91,7 @@ export async function sendChatMessage(
       body: JSON.stringify({
       message,
       conversation_id: conversationId,
+        domain,
     }),
     },
   )
@@ -170,4 +174,121 @@ export async function checkApiHealth(): Promise<boolean> {
 
     return false
   }
+}
+
+
+export type ComplianceEvidence = {
+  company_row: number
+  source_filename: string
+  source_page: number | null
+  source_kind: string
+  text: string
+  score: number
+  values: Record<string, string>
+}
+
+export type ComplianceResult = {
+  requirement_index: number
+  specification_row: number
+  specification_source_filename: string
+  specification_source_page: number | null
+  specification_source_kind: string
+  requirement: string
+  requirement_values: Record<string, string>
+  status: "FC" | "PC" | "NC" | "REVIEW"
+  best_score: number
+  evidence: ComplianceEvidence | null
+  candidates: ComplianceEvidence[]
+  explanation: string
+}
+
+export type ExtraCapability = {
+  company_row: number
+  source_filename: string
+  source_page: number | null
+  source_kind: string
+  capability: string
+  values: Record<string, string>
+}
+
+export type ComplianceResponse = {
+  summary: {
+    total_requirements: number
+    fully_compliant: number
+    partially_compliant: number
+    non_compliant: number
+    manual_review: number
+    coverage_percent: number
+  }
+  results: ComplianceResult[]
+  extra_capabilities: ExtraCapability[]
+  company_row_count: number
+  specification_row_count: number
+}
+
+export async function compareCompliance(
+  companyFiles: File[],
+  specificationFiles: File[],
+): Promise<ComplianceResponse> {
+  if (companyFiles.length === 0) {
+    throw new Error(
+      "En az bir \u015firket \u00f6zellik dosyas\u0131 se\u00e7melisiniz.",
+    )
+  }
+
+  if (specificationFiles.length === 0) {
+    throw new Error(
+      "En az bir \u015fartname dosyas\u0131 se\u00e7melisiniz.",
+    )
+  }
+
+  const body = new FormData()
+
+  for (const file of companyFiles) {
+    body.append(
+      "company_files",
+      file,
+    )
+  }
+
+  for (const file of specificationFiles) {
+    body.append(
+      "specification_files",
+      file,
+    )
+  }
+
+  const response = await fetch(
+    `${API_BASE_URL}/compliance/compare`,
+    {
+      method: "POST",
+      body,
+    },
+  )
+
+  if (!response.ok) {
+    let detail =
+      `HTTP ${response.status}`
+
+    try {
+      const payload =
+        await response.json()
+
+      if (payload?.detail) {
+        detail = String(
+          payload.detail,
+        )
+      }
+    } catch {
+      // response body is not JSON
+    }
+
+    throw new Error(
+      `Kar\u015f\u0131la\u015ft\u0131rma ba\u015far\u0131s\u0131z: ${detail}`,
+    )
+  }
+
+  return (
+    await response.json()
+  ) as ComplianceResponse
 }

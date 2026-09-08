@@ -100,6 +100,47 @@ def detect_language(
     return "tr"
 
 
+
+def _looks_like_question_clause(
+    value: str,
+) -> bool:
+    """
+    A compound split is allowed only when the text before
+    've/and' is already a complete question-like clause.
+
+    Example that SHOULD split:
+      N1 uzerinden hangi sinyallesme tasinir
+      ve bu sinyallesme neden NAS olarak adlandirilir?
+
+    Example that MUST stay together:
+      Traffic Programme (TP) ve
+      Traffic Announcement (TA) flag'leri ne ise yarar?
+    """
+
+    normalized = (
+        _normalize_space(value)
+        .casefold()
+    )
+
+    if not normalized:
+        return False
+
+    return bool(
+        re.search(
+            (
+                r"\b("
+                r"neden|nas\u0131l|hangi|ne|ka\u00e7|"
+                r"kim|nerede|nedir|ni\u00e7in|"
+                r"m\u0131|mi|mu|m\u00fc|"
+                r"why|how|which|what|who|where|when"
+                r")\b"
+            ),
+            normalized,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def _split_questions(
     text: str,
 ) -> list[str]:
@@ -125,6 +166,16 @@ def _split_questions(
                 sentence_part
             )
         )
+
+        if (
+            len(compound_parts) > 1
+            and not _looks_like_question_clause(
+                compound_parts[0]
+            )
+        ):
+            compound_parts = [
+                sentence_part
+            ]
 
         questions.extend(
             part.strip(" ;?")

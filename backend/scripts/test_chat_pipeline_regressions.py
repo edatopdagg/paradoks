@@ -115,7 +115,14 @@ class _FakeRetriever:
         self.results = results
         self.calls = []
 
-    def search(self, *, query, top_k, where=None):
+    def search(
+        self,
+        *,
+        query,
+        top_k,
+        where=None,
+        domain="telecom",
+    ):
         self.calls.append(
             {
                 "query": query,
@@ -533,6 +540,77 @@ class ChatPipelineRegressionTests(unittest.TestCase):
             response["reply"],
             "Bu soruyu yanıtlamak için yeterli standart bilgisi bulunamadı.",
         )
+
+
+    def test_reference_point_semantic_recovery_prefers_exact_relation(
+        self,
+    ):
+        service = self.chat_service
+
+        candidates = [
+            _chunk(
+                (
+                    "General registration management "
+                    "between UE and AMF."
+                ),
+                code="TS 23.501",
+                clause="5.3.3.1",
+                clause_title="General",
+            ),
+            _chunk(
+                (
+                    "N2 reference point signalling "
+                    "between UE and AMF."
+                ),
+                code="TS 23.501",
+                clause="4.2",
+                clause_title="Reference architecture",
+            ),
+            _chunk(
+                (
+                    "N1 may be used for service "
+                    "specific mobility information."
+                ),
+                code="TS 23.273",
+                clause="4.1",
+                clause_title="General Concepts",
+            ),
+            _chunk(
+                (
+                    "NAS signalling between the UE "
+                    "and the AMF is transferred via N1."
+                ),
+                code="TS 23.501",
+                clause="4.2.7",
+                clause_title="Reference points",
+            ),
+        ]
+
+        selected = (
+            service
+            ._recover_reference_point_semantic_candidates(
+                (
+                    "N1 reference point between UE "
+                    "and AMF: which signalling is carried?"
+                ),
+                candidates,
+            )
+        )
+
+        self.assertTrue(
+            selected
+        )
+
+        self.assertEqual(
+            selected[0]["metadata"]["code"],
+            "TS 23.501",
+        )
+
+        self.assertEqual(
+            selected[0]["metadata"]["clause"],
+            "4.2.7",
+        )
+
 
 
 if __name__ == "__main__":

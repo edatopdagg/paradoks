@@ -14,6 +14,7 @@ from app.core.config import (
     PRIORITY_CATALOG_PATH,
     PRIORITY_CHROMA_COLLECTION_NAME,
     PRIORITY_CHROMA_DB_PATH,
+    RADIO_PRIORITY_CHROMA_COLLECTION_NAME,
     PRIORITY_MAX_DISTANCE,
     PRIORITY_MIN_RESULTS,
     PRIORITY_RETRIEVAL_ENABLED,
@@ -31,6 +32,25 @@ _TECHNICAL_TOKEN_RE = re.compile(
     r"[A-Za-z0-9]+"
     r"(?:[+./-][A-Za-z0-9]+)*"
 )
+
+
+_RADIO_DOCUMENT_KEYS = {
+    ("etsi", "en 300 401"),
+    ("etsi", "en 300 468"),
+    ("etsi", "en 302 755"),
+    ("etsi", "ts 101 154"),
+    ("etsi", "ts 101 499"),
+    ("etsi", "ts 101 756"),
+    ("etsi", "ts 102 563"),
+    ("etsi", "ts 102 818"),
+    ("etsi", "ts 102 831"),
+    ("etsi", "ts 102 980"),
+    ("etsi", "ts 103 466"),
+    ("etsi", "ts 103 551"),
+    ("itu-r", "bs.450"),
+    ("nrsc", "nrsc-4-b"),
+    ("nrsc", "nrsc-g300-c"),
+}
 
 
 class TieredRetriever:
@@ -87,6 +107,7 @@ class TieredRetriever:
 
         self.priority_client = None
         self.priority_collection = None
+        self.radio_priority_collection = None
 
         self._priority_documents: list[
             dict[str, str]
@@ -172,6 +193,14 @@ class TieredRetriever:
                 self.priority_client.get_collection(
                     name=(
                         PRIORITY_CHROMA_COLLECTION_NAME
+                    )
+                )
+            )
+
+            self.radio_priority_collection = (
+                self.priority_client.get_collection(
+                    name=(
+                        RADIO_PRIORITY_CHROMA_COLLECTION_NAME
                     )
                 )
             )
@@ -534,6 +563,52 @@ class TieredRetriever:
             )
         )
 
+        # ----------------------------------------------------
+        # TITLE PHRASE SIGNALS
+        # ----------------------------------------------------
+        #
+        # Sadece tekil token e?le?mesi yeterli de?ildir.
+        # ?rne?in:
+        #
+        #   "Cell Broadcast Service Protocol"
+        #
+        # ifadesi bir dok?man ba?l???yla do?rudan ?rt???yorsa
+        # o dok?man genel olarak CBC/BSC kelimelerini i?eren
+        # ba?ka bir dok?mandan daha g??l? aday olmal?d?r.
+        # ----------------------------------------------------
+
+        query_tokens = re.findall(
+            r"[a-z0-9]+",
+            query.casefold(),
+        )
+
+        query_ngrams: dict[
+            int,
+            set[str],
+        ] = {}
+
+        for size in (
+            2,
+            3,
+            4,
+        ):
+            query_ngrams[size] = {
+                " ".join(
+                    query_tokens[
+                        index:index + size
+                    ]
+                )
+                for index in range(
+                    0,
+                    max(
+                        0,
+                        len(query_tokens)
+                        - size
+                        + 1,
+                    ),
+                )
+            }
+
         final_scores = (
             semantic_scores.copy()
         )
@@ -555,9 +630,73 @@ class TieredRetriever:
                 0.16,
             )
 
+            document = (
+                self._priority_documents[
+                    index
+                ]
+            )
+
+            title = str(
+                document.get(
+                    "title",
+                    "",
+                )
+            ).casefold()
+
+            title_tokens = re.findall(
+                r"[a-z0-9]+",
+                title,
+            )
+
+            phrase_bonus = 0.0
+
+            for size, weight in (
+                (2, 0.03),
+                (3, 0.07),
+                (4, 0.12),
+            ):
+
+                title_ngrams = {
+                    " ".join(
+                        title_tokens[
+                            title_index:
+                            title_index + size
+                        ]
+                    )
+                    for title_index in range(
+                        0,
+                        max(
+                            0,
+                            len(title_tokens)
+                            - size
+                            + 1,
+                        ),
+                    )
+                }
+
+                shared_phrases = (
+                    query_ngrams[size]
+                    & title_ngrams
+                )
+
+                phrase_bonus += (
+                    weight
+                    * len(
+                        shared_phrases
+                    )
+                )
+
+            phrase_bonus = min(
+                phrase_bonus,
+                0.30,
+            )
+
             final_scores[
                 index
-            ] += lexical_bonus
+            ] += (
+                lexical_bonus
+                + phrase_bonus
+            )
 
         ranking = np.argsort(
             -final_scores
@@ -824,6 +963,7 @@ class TieredRetriever:
         routed_documents: list[
             dict[str, str]
         ] | None,
+        collection: Any | None = None,
     ) -> list[
         dict[str, Any]
     ]:
@@ -883,8 +1023,13 @@ class TieredRetriever:
             time.perf_counter()
         )
 
+        target_collection = (
+            collection
+            or self.priority_collection
+        )
+
         result = (
-            self.priority_collection.query(
+            target_collection.query(
                 **arguments
             )
         )
@@ -943,6 +1088,376 @@ class TieredRetriever:
         return matches
 
 
+
+    def _is_radio_document(
+        self,
+        document: dict[str, str],
+    ) -> bool:
+
+        return (
+            self._document_key(
+                document.get("org"),
+                document.get("code"),
+            )
+            in _RADIO_DOCUMENT_KEYS
+        )
+
+
+    def _search_radio(
+        self,
+        *,
+        query: str,
+        top_k: int,
+        where: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+
+        if (
+            not self.priority_enabled
+            or self.radio_priority_collection is None
+        ):
+
+            print(
+                "[TIERED] Radio priority unavailable. "
+                "NO telecom fallback."
+            )
+
+            return []
+
+        query_lower = query.casefold()
+
+        # ----------------------------------------------------
+        # RADIO SUB-DOMAIN ROUTING
+        # ----------------------------------------------------
+        #
+        # Filtre VECTOR SEARCH'ten ?nce uygulan?r.
+        #
+        # RDS/RBDS -> yaln?z NRSC
+        # DAB      -> yaln?z DAB kaynaklar?
+        # DVB-T2   -> yaln?z DVB kaynaklar?
+        # FM       -> ITU-R + RDS kaynaklar?
+        # ----------------------------------------------------
+
+        forced_radio_keys = None
+        sub_domain = None
+
+        if (
+            "rds" in query_lower
+            or "rbds" in query_lower
+            or re.search(
+                r"\btp\b",
+                query_lower,
+            )
+            or re.search(
+                r"\bta\b",
+                query_lower,
+            )
+        ):
+
+            sub_domain = "RDS/RBDS"
+
+            forced_radio_keys = {
+                ("nrsc", "nrsc-4-b"),
+                ("nrsc", "nrsc-g300-c"),
+            }
+
+        elif (
+            "dab+" in query_lower
+            or re.search(
+                r"\bdab\b",
+                query_lower,
+            )
+            or "he-aac" in query_lower
+        ):
+
+            sub_domain = "DAB"
+
+            forced_radio_keys = {
+                ("etsi", "en 300 401"),
+                ("etsi", "ts 102 563"),
+                ("etsi", "ts 103 466"),
+                ("etsi", "ts 101 756"),
+                ("etsi", "ts 102 818"),
+                ("etsi", "ts 103 551"),
+                ("etsi", "ts 101 499"),
+                ("etsi", "ts 102 980"),
+            }
+
+        elif (
+            "dvb-t2" in query_lower
+            or re.search(
+                r"\bdvb\b",
+                query_lower,
+            )
+        ):
+
+            sub_domain = "DVB-T2"
+
+            forced_radio_keys = {
+                ("etsi", "en 302 755"),
+                ("etsi", "ts 102 831"),
+                ("etsi", "en 300 468"),
+                ("etsi", "ts 101 154"),
+            }
+
+        elif re.search(
+            r"\bfm\b",
+            query_lower,
+        ):
+
+            sub_domain = "FM"
+
+            forced_radio_keys = {
+                ("itu-r", "bs.450"),
+                ("nrsc", "nrsc-4-b"),
+                ("nrsc", "nrsc-g300-c"),
+            }
+
+        # ----------------------------------------------------
+        # EXPLICIT RADIO SUB-DOMAIN
+        # ----------------------------------------------------
+
+        if forced_radio_keys is not None:
+
+            routed_documents = [
+                document
+                for document
+                in self._priority_documents
+                if (
+                    self._document_key(
+                        document.get("org"),
+                        document.get("code"),
+                    )
+                    in forced_radio_keys
+                )
+            ]
+
+            print(
+                "[TIERED] Forced radio sub-domain:",
+                sub_domain,
+            )
+
+            print(
+                "[TIERED] Forced radio documents:",
+                len(routed_documents),
+            )
+
+            if not routed_documents:
+
+                print(
+                    "[TIERED] Requested radio sub-domain "
+                    "has no indexed documents."
+                )
+
+                return []
+
+        # ----------------------------------------------------
+        # GENERIC RADIO QUERY
+        # ----------------------------------------------------
+
+        else:
+
+            all_routed_documents, router_score = (
+                self._route_priority_documents(
+                    query
+                )
+            )
+
+            routed_documents = [
+                document
+                for document
+                in all_routed_documents
+                if self._is_radio_document(
+                    document
+                )
+            ]
+
+            # Router g??l? bi?imde telekom taraf?n?
+            # i?aret ediyorsa radyo i?inde uydurma sonu? ?retme.
+            if (
+                router_score
+                >= PRIORITY_ROUTER_MIN_SCORE
+                and not routed_documents
+            ):
+
+                print(
+                    "[TIERED] Query does not match "
+                    "radio domain. NO telecom fallback."
+                )
+
+                return []
+
+            # Router d???k g?venliyse b?t?n radio_priority
+            # collection aranabilir.
+            if (
+                router_score
+                < PRIORITY_ROUTER_MIN_SCORE
+            ):
+                routed_documents = None
+
+        # ----------------------------------------------------
+        # VECTOR SEARCH
+        # ----------------------------------------------------
+
+        matches = self._priority_search(
+            query=query,
+            top_k=top_k,
+            where=where,
+            routed_documents=routed_documents,
+            collection=self.radio_priority_collection,
+        )
+
+        print(
+            "[TIERED] Radio candidates:",
+            len(matches),
+        )
+
+        # ----------------------------------------------------
+        # RDS TP/TA EXACT EVIDENCE NARROWING
+        # ----------------------------------------------------
+        #
+        # TP/TA sorular?nda RDS-TMC, character set vb.
+        # kom?u maddelerin prompta girmesini engeller.
+        # NRSC-G300-C 5.4 gibi do?rudan ilgili madde varsa
+        # yaln?z o kan?t(lar) korunur.
+        # ----------------------------------------------------
+
+        if sub_domain == "RDS/RBDS":
+
+            exact_matches = []
+
+            for match in matches:
+
+                metadata = (
+                    match.get(
+                        "metadata",
+                        {},
+                    )
+                    or {}
+                )
+
+                searchable = " ".join(
+                    [
+                        str(
+                            match.get(
+                                "title",
+                                "",
+                            )
+                        ),
+                        str(
+                            match.get(
+                                "text",
+                                "",
+                            )
+                        ),
+                        str(
+                            metadata.get(
+                                "clause_title",
+                                "",
+                            )
+                        ),
+                        str(
+                            metadata.get(
+                                "clause",
+                                "",
+                            )
+                        ),
+                    ]
+                ).casefold()
+
+                has_tp = (
+                    "traffic programming"
+                    in searchable
+                    or "traffic programme"
+                    in searchable
+                )
+
+                has_ta = (
+                    "traffic announcement"
+                    in searchable
+                )
+
+                if has_tp and has_ta:
+                    exact_matches.append(
+                        match
+                    )
+
+            if exact_matches:
+
+                matches = (
+                    exact_matches[
+                        :top_k
+                    ]
+                )
+
+                print(
+                    "[TIERED] RDS TP/TA exact evidence:",
+                    len(matches),
+                )
+
+        if not matches:
+
+            print(
+                "[TIERED] Radio evidence unavailable. "
+                "NO telecom fallback."
+            )
+
+            return []
+
+        # ----------------------------------------------------
+        # QUALITY GATE
+        # ----------------------------------------------------
+
+        best_distance = min(
+            float(
+                match.get(
+                    "distance",
+                    1.0,
+                )
+            )
+            for match in matches
+        )
+
+        print(
+            "[TIERED] Radio best distance:",
+            f"{best_distance:.4f}",
+        )
+
+        # Explicit alt-domain tespit edildi?inde dok?man alan?
+        # zaten kesin bi?imde s?n?rland?r?ld??? i?in tek g??l?
+        # kan?t da kabul edilir.
+        if forced_radio_keys is not None:
+
+            strong_enough = (
+                best_distance
+                <= PRIORITY_MAX_DISTANCE
+            )
+
+        else:
+
+            strong_enough = (
+                len(matches)
+                >= PRIORITY_MIN_RESULTS
+                and best_distance
+                <= PRIORITY_MAX_DISTANCE
+            )
+
+        if not strong_enough:
+
+            print(
+                "[TIERED] Radio evidence weak. "
+                "NO telecom fallback."
+            )
+
+            return []
+
+        print(
+            "[TIERED] Selected domain/tier: "
+            "RADIO / PRIORITY"
+        )
+
+        return matches
+
+
     # ========================================================
     # PUBLIC SEARCH
     # ========================================================
@@ -955,6 +1470,7 @@ class TieredRetriever:
             str,
             Any
         ] | None = None,
+        domain: str = "telecom",
     ) -> list[
         dict[str, Any]
     ]:
@@ -970,7 +1486,30 @@ class TieredRetriever:
                 "Arama sorusu boş olamaz."
             )
 
-        # ----------------------------------------------------
+
+
+        clean_domain = (
+            domain
+            or "telecom"
+        ).strip().casefold()
+
+        if clean_domain not in {
+            "telecom",
+            "radio",
+        }:
+
+            raise ValueError(
+                "Ge?ersiz retrieval domain."
+            )
+
+        if clean_domain == "radio":
+
+            return self._search_radio(
+                query=clean_query,
+                top_k=top_k,
+                where=where,
+            )
+# ----------------------------------------------------
         # PRIORITY DISABLED
         # ----------------------------------------------------
 
@@ -1036,6 +1575,14 @@ class TieredRetriever:
                 clean_query
             )
         )
+
+        routed_documents = [
+            document
+            for document in routed_documents
+            if not self._is_radio_document(
+                document
+            )
+        ]
 
         if (
             not routed_documents

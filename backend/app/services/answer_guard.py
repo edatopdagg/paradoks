@@ -255,33 +255,300 @@ def _system_term_aliases(term: str) -> set[str]:
 # DOKÜMANIN CEVAP TÜRÜ YERİNE KULLANILMASI
 # ---------------------------------------------------------
 
-def _document_used_as_answer(answer_type: str, first_sentence: str) -> bool:
-    if answer_type == "STANDART / DOKÜMAN":
+def _document_used_as_answer(
+    answer_type: str,
+    first_sentence: str,
+) -> bool:
+    if answer_type == "STANDART / DOK?MAN":
         return False
 
-    if not DOCUMENT_CODE_PATTERN.search(first_sentence):
+    if not DOCUMENT_CODE_PATTERN.search(
+        first_sentence
+    ):
         return False
 
-    lower_sentence = first_sentence.casefold()
+    lower_sentence = (
+        first_sentence.casefold()
+    )
 
-    # Eğer cümlede beklenen türün kendisi (mesaj, prosedür, arayüz adı vb.) zaten geçiyorsa doküman sadece atıftır
-    if any(k in lower_sentence for k in ("request", "response", "accept", "reject", "procedure", "referans", "reference point", "protocol")):
+    # Teknik varl???n kendisi cevapta a??k?a varsa
+    # dok?man kodu yaln?zca at?f olabilir.
+    if any(
+        marker in lower_sentence
+        for marker in (
+            "request",
+            "response",
+            "accept",
+            "reject",
+            "procedure",
+            "referans",
+            "reference point",
+            "protocol",
+        )
+    ):
         return False
 
     document_words = (
         "standart",
         "standard",
-        "doküman",
+        "dok?man",
         "document",
         "specification",
     )
 
-    return any(word in lower_sentence for word in document_words)
+    return any(
+        word in lower_sentence
+        for word in document_words
+    )
 
 
 # ---------------------------------------------------------
 # ANA VALIDATION
 # ---------------------------------------------------------
+
+
+# ---------------------------------------------------------
+# CEVAP KALITESI:
+# TEKRAR + NORMATIF YON KORUMA
+# ---------------------------------------------------------
+
+_NEGATIVE_SOURCE_PATTERNS = (
+    r"\bshall\s+not\b",
+    r"\bmust\s+not\b",
+    r"\bshould\s+not\b",
+    r"\bnot\s+supported\b",
+    r"\bnot\s+permitted\b",
+    r"\bnot\s+allowed\b",
+    r"\bnot\s+recommended\b",
+    r"\bdiscouraged\b",
+    r"\bprohibited\b",
+    r"\bdeprecated\b",
+)
+
+_NEGATIVE_REPLY_PATTERNS = (
+    r"\bshall\s+not\b",
+    r"\bmust\s+not\b",
+    r"\bshould\s+not\b",
+    r"\bnot\s+supported\b",
+    r"\bnot\s+permitted\b",
+    r"\bnot\s+allowed\b",
+    r"\bnot\s+recommended\b",
+    r"\bdiscouraged\b",
+    r"\bprohibited\b",
+    r"\bdeprecated\b",
+    r"\bshould\s+be\s+avoided\b",
+
+    # T?rk?e - ASCII ve Unicode bi?imleri
+    r"\bhayir\b",
+    r"\bhay\u0131r\b",
+
+    r"\b\u00f6nerilmez\b",
+    r"\b\u00f6nerilmemektedir\b",
+    r"\b\u00f6nermez\b",
+    r"\b\u00f6nermemektedir\b",
+    r"\b\u00f6nermiyor\b",
+    r"\btavsiye\s+etmez\b",
+    r"\btavsiye\s+etmemektedir\b",
+    r"\btavsiye\s+etmiyor\b",
+
+    r"\btavsiye\s+edilmez\b",
+    r"\btavsiye\s+edilmemektedir\b",
+
+    r"\bdesteklenmez\b",
+    r"\bdesteklenmemektedir\b",
+
+    r"\bizin\s+verilmez\b",
+
+    r"\byasaktir\b",
+    r"\byasakt\u0131r\b",
+
+    r"\bkullanilmamali\w*\b",
+    r"\bkullan\u0131lmamal\u0131\w*\b",
+
+    r"\byapilmamali\w*\b",
+    r"\byap\u0131lmamal\u0131\w*\b",
+)
+
+
+def _sentence_units(
+    value: str,
+) -> list[str]:
+    cleaned = re.sub(
+        r"(?m)^\s*(?:[-*?]|\d+[.)])\s*",
+        "",
+        value or "",
+    )
+
+    return [
+        part.strip()
+        for part in re.split(
+            r"(?<=[.!?])\s+|\n+",
+            cleaned,
+        )
+        if part.strip()
+    ]
+
+
+def _find_repeated_sentences(
+    reply: str,
+) -> list[str]:
+    """
+    Ayn? uzun teknik c?mlenin model taraf?ndan
+    tekrar tekrar ?retilmesini engeller.
+    """
+
+    seen: set[str] = set()
+    repeated: list[str] = []
+
+    for sentence in _sentence_units(
+        reply
+    ):
+        normalized = _normalize(
+            re.sub(
+                r"^\s*\d+[.)]\s*",
+                "",
+                sentence,
+            )
+        )
+
+        # K?sa do?al tekrarlar? kalite hatas? sayma.
+        if len(normalized) < 45:
+            continue
+
+        if normalized in seen:
+            repeated.append(
+                sentence
+            )
+            continue
+
+        seen.add(
+            normalized
+        )
+
+    return repeated
+
+
+def _has_pattern(
+    value: str,
+    patterns: tuple[str, ...],
+) -> bool:
+    return any(
+        re.search(
+            pattern,
+            value or "",
+            flags=re.IGNORECASE,
+        )
+        for pattern in patterns
+    )
+
+
+def _normative_polarity_conflicts(
+    question: str,
+    reply: str,
+    chunks: list[dict[str, Any]],
+) -> list[str]:
+    """
+    Kaynakta soruyla do?rudan ili?kili bir teknik
+    identifier i?in a??k negatif/normatif ifade varsa
+    cevab?n bu y?n? tamamen kaybetmesini engeller.
+
+    ?rnek:
+      source:
+        automatic switching using TA is discouraged
+
+      invalid reply:
+        TA otomatik switching sa?lar.
+
+      valid reply:
+        TA automatic switching ile ili?kilidir;
+        ancak NRSC bu kullan?m? ?nermemektedir.
+    """
+
+    question_identifiers = {
+        value.casefold()
+        for value in _technical_identifiers(
+            question
+        )
+    }
+
+    if not question_identifiers:
+        return []
+
+    reply_identifiers = {
+        value.casefold()
+        for value in _technical_identifiers(
+            reply
+        )
+    }
+
+    conflicts: list[str] = []
+
+    for chunk in chunks:
+
+        source_text = str(
+            chunk.get(
+                "text",
+                "",
+            )
+            or ""
+        )
+
+        for sentence in _sentence_units(
+            source_text
+        ):
+
+            if not _has_pattern(
+                sentence,
+                _NEGATIVE_SOURCE_PATTERNS,
+            ):
+                continue
+
+            sentence_identifiers = {
+                value.casefold()
+                for value
+                in _technical_identifiers(
+                    sentence
+                )
+            }
+
+            shared = (
+                question_identifiers
+                & sentence_identifiers
+            )
+
+            if not shared:
+                continue
+
+            # Cevap ayn? teknik varl?ktan s?z etmiyorsa
+            # bu negatif c?mleyi zorla uygulatma.
+            if not (
+                shared
+                & reply_identifiers
+            ):
+                continue
+
+            if _has_pattern(
+                reply,
+                _NEGATIVE_REPLY_PATTERNS,
+            ):
+                continue
+
+            conflicts.append(
+                (
+                    ", ".join(
+                        sorted(shared)
+                    )
+                    + ": "
+                    + sentence[:220]
+                )
+            )
+
+    return list(
+        dict.fromkeys(
+            conflicts
+        )
+    )
+
 
 def validate_answer(
     question: str,
@@ -333,6 +600,52 @@ def validate_answer(
             ),
             "evidence_terms": evidence_terms,
             "unsupported_claims": unsupported_claims,
+        }
+
+    repeated_sentences = (
+        _find_repeated_sentences(
+            clean_reply
+        )
+    )
+
+    if repeated_sentences:
+        return {
+            "valid": False,
+            "answer_type": answer_type,
+            "reason": (
+                "Cevap ayni teknik cumleyi "
+                "gereksiz bicimde tekrar ediyor."
+            ),
+            "evidence_terms": evidence_terms,
+            "repeated_sentences": (
+                repeated_sentences
+            ),
+        }
+
+    polarity_conflicts = (
+        _normative_polarity_conflicts(
+            question=question,
+            reply=clean_reply,
+            chunks=chunks,
+        )
+    )
+
+    if polarity_conflicts:
+        return {
+            "valid": False,
+            "answer_type": answer_type,
+            "reason": (
+                "Cevap, kaynakta bulunan "
+                "normatif/olumsuz teknik yonu "
+                "korumuyor: "
+                + " | ".join(
+                    polarity_conflicts
+                )
+            ),
+            "evidence_terms": evidence_terms,
+            "polarity_conflicts": (
+                polarity_conflicts
+            ),
         }
 
     if answer_type == "SİSTEM" and evidence_terms:

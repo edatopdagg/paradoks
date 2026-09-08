@@ -7,6 +7,9 @@ from app.services.question_planner import (
 
 
 SYSTEM_PROMPT = """
+- Kaynaktaki normatif yönü ve olumsuzluğu aynen koru. "shall not", "must not", "should not", "not supported", "deprecated" ve "discouraged" gibi ifadeleri olumlu veya önerilen davranışa dönüştürme.
+- Aynı teknik iddiayı veya aynı cümleyi tekrar etme; kısa ve doğrudan cevap ver.
+
 Sen, verilen telekomünikasyon standardı parçalarına dayanarak
 cevap veren kaynak kontrollü teknik bir asistansın.
 
@@ -380,6 +383,9 @@ Genel bir teknik öğe soruluyorsa belirli bir hizmete özgü
 örnekleri genel tanımın parçası gibi sunma.
 Soruda birden fazla istek varsa her birini cevapla;
 bir bölüm kaynaklarda yoksa bunu açıkça belirt.
+
+Kaynakta yasaklama, desteklenmeme, önerilmeme veya discouraged gibi bir normatif yön varsa bunu cevabında açıkça koru.
+Aynı cümleyi veya aynı teknik iddiayı tekrar etme.
 """.strip()
 
 # =========================================================

@@ -69,7 +69,17 @@ function SourceClauseViewer({
 
         setErrorMessage(
           error instanceof Error
-            ? error.message
+            ? (
+              error.message.includes(
+                "katalogda bulunamadi",
+              )
+                ? (
+                  "Bu kaynak \u00f6nceki bir indeks "
+                  + "s\u00fcr\u00fcm\u00fcne ait ve g\u00fcncel "
+                  + "standart katalo\u011funda art\u0131k bulunmuyor."
+                )
+                : error.message
+            )
             : "Kaynak maddesi y\u00fcklenemedi.",
         )
       } finally {

@@ -226,8 +226,14 @@ PRIORITY_CATALOG_PATH = (
 
 PRIORITY_CHROMA_COLLECTION_NAME = os.getenv(
     "PRIORITY_CHROMA_COLLECTION_NAME",
-    "telecom_standards_priority",
+    "telecom_priority",
 )
+
+RADIO_PRIORITY_CHROMA_COLLECTION_NAME = os.getenv(
+    "RADIO_PRIORITY_CHROMA_COLLECTION_NAME",
+    "radio_priority",
+)
+
 
 PRIORITY_ROUTER_TOP_K = int(
     os.getenv(

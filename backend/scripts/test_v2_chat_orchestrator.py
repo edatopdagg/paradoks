@@ -108,8 +108,14 @@ class ChatOrchestratorTests(unittest.TestCase):
         self.assertEqual(
             mocked_generate_reply.call_args_list,
             [
-                call(first_question),
-                call(second_question),
+                call(
+                    first_question,
+                    domain="telecom",
+                ),
+                call(
+                    second_question,
+                    domain="telecom",
+                ),
             ],
         )
 
