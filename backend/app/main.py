@@ -170,40 +170,64 @@ def source_clause(
 
 @app.post("/compliance/compare")
 async def compare_compliance(
-    company_file: UploadFile = File(...),
-    specification_file: UploadFile = File(...),
+    company_files: list[UploadFile] = File(...),
+    specification_files: list[UploadFile] = File(...),
 ) -> dict:
 
     try:
+        company_payloads: list[
+            tuple[str, bytes]
+        ] = []
 
-        company_content = (
-            await company_file.read()
-        )
+        for uploaded_file in company_files:
 
-        specification_content = (
-            await specification_file.read()
-        )
+            content = (
+                await uploaded_file.read()
+            )
+
+            company_payloads.append(
+                (
+                    uploaded_file.filename
+                    or "company_file",
+                    content,
+                )
+            )
+
+
+        specification_payloads: list[
+            tuple[str, bytes]
+        ] = []
+
+        for uploaded_file in specification_files:
+
+            content = (
+                await uploaded_file.read()
+            )
+
+            specification_payloads.append(
+                (
+                    uploaded_file.filename
+                    or "specification_file",
+                    content,
+                )
+            )
+
 
         return compare_documents(
-            company_filename=(
-                company_file.filename
-                or "company.xlsx"
+            company_files=(
+                company_payloads
             ),
-            company_content=(
-                company_content
-            ),
-            specification_filename=(
-                specification_file.filename
-                or "specification.xlsx"
-            ),
-            specification_content=(
-                specification_content
+            specification_files=(
+                specification_payloads
             ),
         )
+
 
     except ValueError as error:
 
         raise HTTPException(
             status_code=400,
-            detail=str(error),
+            detail=str(
+                error
+            ),
         ) from error
