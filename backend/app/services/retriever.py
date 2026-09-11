@@ -1,4 +1,6 @@
+import sqlite3
 import time
+from pathlib import Path
 from typing import Any
 
 import chromadb
@@ -7,6 +9,7 @@ from app.core.config import (
     CHROMA_COLLECTION_NAME,
     CHROMA_DB_PATH,
     MAX_RETRIEVAL_DISTANCE,
+    V3_CATALOG_PATH,
 )
 from app.services.embedding_service import EmbeddingService
 from app.services.query_normalizer import QueryNormalizer
@@ -42,6 +45,14 @@ class Retriever:
         self.embedding_service = EmbeddingService()
         self.query_normalizer = QueryNormalizer()
 
+        # Explicit document -> latest version_id cache.
+        # Ayn? standard?n catalog.sqlite3 ??z?mlemesini
+        # her sorguda tekrar yapmamak i?in tutulur.
+        self._document_where_cache: dict[
+            tuple[str, str],
+            dict[str, Any],
+        ] = {}
+
         print(
             "[RETRIEVER] Chroma DB:",
             CHROMA_DB_PATH,
@@ -64,6 +75,324 @@ class Retriever:
             "[RETRIEVER] Toplam chunk:",
             self.collection.count(),
         )
+
+    @staticmethod
+    def _extract_document_identity_from_where(
+        where: dict[str, Any] | None,
+    ) -> tuple[str, str] | None:
+        """
+        Chroma filtresindeki org + code kimli?ini ??kar?r.
+
+        Desteklenen ?rnek:
+
+        {
+            "$and": [
+                {"org": "3GPP"},
+                {"code": "TS 23.501"},
+            ]
+        }
+
+        veya:
+
+        {
+            "org": "3GPP",
+            "code": "TS 23.501",
+        }
+        """
+
+        if not where:
+            return None
+
+        org = ""
+        code = ""
+
+        direct_org = where.get(
+            "org"
+        )
+
+        direct_code = where.get(
+            "code"
+        )
+
+        if isinstance(
+            direct_org,
+            str,
+        ):
+            org = direct_org.strip()
+
+        if isinstance(
+            direct_code,
+            str,
+        ):
+            code = direct_code.strip()
+
+        and_conditions = where.get(
+            "$and"
+        )
+
+        if isinstance(
+            and_conditions,
+            list,
+        ):
+
+            for condition in and_conditions:
+
+                if not isinstance(
+                    condition,
+                    dict,
+                ):
+                    continue
+
+                condition_org = (
+                    condition.get(
+                        "org"
+                    )
+                )
+
+                condition_code = (
+                    condition.get(
+                        "code"
+                    )
+                )
+
+                if (
+                    isinstance(
+                        condition_org,
+                        str,
+                    )
+                    and condition_org.strip()
+                ):
+                    org = (
+                        condition_org.strip()
+                    )
+
+                if (
+                    isinstance(
+                        condition_code,
+                        str,
+                    )
+                    and condition_code.strip()
+                ):
+                    code = (
+                        condition_code.strip()
+                    )
+
+        if not org or not code:
+            return None
+
+        return (
+            org,
+            code,
+        )
+
+
+    @staticmethod
+    def _resolve_catalog_path() -> Path | None:
+        """
+        Aktif V3 catalog.sqlite3 dosyas?n? bulur.
+
+        ?nce config'teki V3_CATALOG_PATH denenir.
+        Ard?ndan CHROMA_DB_PATH'in ?st klas?r?ne bak?l?r.
+        """
+
+        candidates = [
+            Path(
+                str(
+                    V3_CATALOG_PATH
+                )
+            ),
+            (
+                Path(
+                    str(
+                        CHROMA_DB_PATH
+                    )
+                ).parent
+                / "catalog.sqlite3"
+            ),
+        ]
+
+        seen: set[str] = set()
+
+        for candidate in candidates:
+
+            key = str(
+                candidate
+            ).casefold()
+
+            if key in seen:
+                continue
+
+            seen.add(
+                key
+            )
+
+            if (
+                candidate.exists()
+                and candidate.is_file()
+            ):
+                return candidate
+
+        return None
+
+
+    def _resolve_fast_document_where(
+        self,
+        where: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """
+        Explicit org + code filtresini latest version_id
+        filtresine d?n??t?r?r.
+
+        Neden:
+
+        Full Chroma DB ?zerinde:
+
+            org + code ($and)
+                ~24 saniye
+
+        ancak:
+
+            version_id
+                ~0.16 saniye
+
+        s?rmektedir.
+
+        Bu d?n???m yaln?zca catalog.sqlite3 i?inde
+        kesin latest version bulundu?unda yap?l?r.
+
+        ??z?m bulunamazsa mevcut where filtresi aynen
+        korunur; yani retrieval davran??? bozulmaz.
+        """
+
+        identity = (
+            self
+            ._extract_document_identity_from_where(
+                where
+            )
+        )
+
+        if identity is None:
+            return where
+
+        org, code = identity
+
+        cache_key = (
+            org.strip().casefold(),
+            code.strip().casefold(),
+        )
+
+        cached = (
+            self
+            ._document_where_cache
+            .get(
+                cache_key
+            )
+        )
+
+        if cached is not None:
+            return dict(
+                cached
+            )
+
+        catalog_path = (
+            self
+            ._resolve_catalog_path()
+        )
+
+        if catalog_path is None:
+
+            print(
+                "[RETRIEVAL] V3 catalog bulunamad?; "
+                "orijinal metadata filtresi kullan?lacak."
+            )
+
+            return where
+
+        connection = None
+
+        try:
+
+            connection = (
+                sqlite3.connect(
+                    str(
+                        catalog_path
+                    )
+                )
+            )
+
+            row = (
+                connection.execute(
+                    """
+                    SELECT
+                        document_versions.id
+                    FROM documents
+                    JOIN document_versions
+                      ON document_versions.document_id
+                         = documents.id
+                    WHERE documents.org_key = ?
+                      AND documents.code_key = ?
+                      AND document_versions.is_latest = 1
+                    LIMIT 1
+                    """,
+                    (
+                        cache_key[0],
+                        cache_key[1],
+                    ),
+                )
+                .fetchone()
+            )
+
+        except sqlite3.Error as error:
+
+            print(
+                "[RETRIEVAL] Catalog resolve hatas?:",
+                error,
+            )
+
+            return where
+
+        finally:
+
+            if connection is not None:
+                connection.close()
+
+        if (
+            row is None
+            or not row[0]
+        ):
+
+            print(
+                "[RETRIEVAL] Catalog latest version "
+                "bulunamad?:",
+                org,
+                code,
+            )
+
+            return where
+
+        resolved_where = {
+            "version_id": str(
+                row[0]
+            )
+        }
+
+        self._document_where_cache[
+            cache_key
+        ] = dict(
+            resolved_where
+        )
+
+        print(
+            "[RETRIEVAL] Fast document filter:",
+            f"{org} {code}",
+            "->",
+            resolved_where[
+                "version_id"
+            ],
+        )
+
+        return resolved_where
+
 
     def _merge_results(
         self,
@@ -547,10 +876,26 @@ class Retriever:
         # Reranker'a yine en fazla 6 sonuç gider.
         # -------------------------------------------------
 
-        chroma_n_results = max(
-            top_k,
-            CHROMA_CANDIDATES_PER_VARIANT,
-        )
+        # Explicit document searches already have a precise
+        # catalog-backed version_id filter.
+        #
+        # Keep all normalized query variants for recall, but
+        # reduce per-variant Chroma depth. This preserves the
+        # multi-query behavior while avoiding an unnecessarily
+        # deep filtered ANN search.
+        if where:
+
+            chroma_n_results = max(
+                top_k,
+                12,
+            )
+
+        else:
+
+            chroma_n_results = max(
+                top_k,
+                CHROMA_CANDIDATES_PER_VARIANT,
+            )
 
         # -------------------------------------------------
         # 4. CHROMA SEARCH
@@ -570,10 +915,16 @@ class Retriever:
             ],
         }
 
-        if where:
+        effective_where = (
+            self._resolve_fast_document_where(
+                where
+            )
+        )
+
+        if effective_where:
             query_arguments[
                 "where"
-            ] = where
+            ] = effective_where
 
         result = self.collection.query(
             **query_arguments
@@ -656,6 +1007,12 @@ class Retriever:
                 "[RETRIEVAL] Metadata filtresi:",
                 where,
             )
+
+            if effective_where != where:
+                print(
+                    "[RETRIEVAL] Effective fast filter:",
+                    effective_where,
+                )
 
         print(
             "[RETRIEVAL] Toplam ham sonuç:",
