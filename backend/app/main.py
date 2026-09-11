@@ -1,15 +1,29 @@
-from fastapi import FastAPI, File, HTTPException, UploadFile, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import (
+    FastAPI,
+    File,
+    HTTPException,
+    UploadFile,
+)
+from fastapi.middleware.cors import (
+    CORSMiddleware,
+)
 
 from app.schemas import (
     ChatRequest,
     ChatResponse,
+    EvidenceRequest,
+    EvidenceResponse,
     SourceClauseResponse,
 )
 from app.services.chat_orchestrator import (
     generate_chat_response,
 )
-from app.services.compliance_service import compare_documents
+from app.services.compliance_service import (
+    compare_documents,
+)
+from app.services.evidence_service import (
+    generate_evidence,
+)
 from app.services.source_service import (
     get_source_clause,
 )
@@ -69,12 +83,43 @@ def chat(
 ) -> ChatResponse:
 
     result = generate_chat_response(
-    message=request.message,
-    conversation_id=request.conversation_id,
-    domain=request.domain,
-)
+        message=request.message,
+        conversation_id=(
+            request.conversation_id
+        ),
+        domain=request.domain,
+    )
 
     return ChatResponse(
+        **result
+    )
+
+
+# ---------------------------------------------------------
+# EVIDENCE
+# ---------------------------------------------------------
+
+@app.post(
+    "/evidence",
+    response_model=EvidenceResponse,
+)
+def evidence(
+    request: EvidenceRequest,
+) -> EvidenceResponse:
+
+    try:
+        result = generate_evidence(
+            message=request.message,
+            domain=request.domain,
+        )
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400,
+            detail=str(error),
+        ) from error
+
+    return EvidenceResponse(
         **result
     )
 
@@ -91,6 +136,7 @@ def source_clause(
     version_id: str,
     clause_id: str,
 ) -> SourceClauseResponse:
+
     try:
         result = get_source_clause(
             version_id=version_id,
@@ -124,78 +170,34 @@ def source_clause(
 
 @app.post("/compliance/compare")
 async def compare_compliance(
-    company_files: list[UploadFile] = File(...),
-    specification_files: list[UploadFile] = File(...),
+    company_file: UploadFile = File(...),
+    specification_file: UploadFile = File(...),
 ) -> dict:
 
     try:
 
-        if not company_files:
-            raise ValueError(
-                "En az bir ?irket ?zellik dosyas? "
-                "y?klemelisiniz."
-            )
+        company_content = (
+            await company_file.read()
+        )
 
-        if not specification_files:
-            raise ValueError(
-                "En az bir ?artname dosyas? "
-                "y?klemelisiniz."
-            )
-
-        company_documents: list[
-            tuple[str, bytes]
-        ] = []
-
-        for index, upload in enumerate(
-            company_files,
-            start=1,
-        ):
-            content = await upload.read()
-
-            if not content:
-                raise ValueError(
-                    f"?irket dosyas? bo?: "
-                    f"{upload.filename or index}"
-                )
-
-            company_documents.append(
-                (
-                    upload.filename
-                    or f"company-{index}.txt",
-                    content,
-                )
-            )
-
-        specification_documents: list[
-            tuple[str, bytes]
-        ] = []
-
-        for index, upload in enumerate(
-            specification_files,
-            start=1,
-        ):
-            content = await upload.read()
-
-            if not content:
-                raise ValueError(
-                    f"?artname dosyas? bo?: "
-                    f"{upload.filename or index}"
-                )
-
-            specification_documents.append(
-                (
-                    upload.filename
-                    or f"specification-{index}.txt",
-                    content,
-                )
-            )
+        specification_content = (
+            await specification_file.read()
+        )
 
         return compare_documents(
-            company_files=(
-                company_documents
+            company_filename=(
+                company_file.filename
+                or "company.xlsx"
             ),
-            specification_files=(
-                specification_documents
+            company_content=(
+                company_content
+            ),
+            specification_filename=(
+                specification_file.filename
+                or "specification.xlsx"
+            ),
+            specification_content=(
+                specification_content
             ),
         )
 

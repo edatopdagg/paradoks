@@ -66,6 +66,30 @@ class ChatResponse(BaseModel):
     assistant_answer: str = ""
 
 
+class EvidenceRequest(BaseModel):
+    message: str
+    domain: Literal["telecom", "radio"] = "telecom"
+
+
+class EvidenceResponse(BaseModel):
+    query: str
+    domain: Literal["telecom", "radio"] = "telecom"
+
+    evidence: list[Source] = Field(
+        default_factory=list
+    )
+
+    blocked_sources: list[
+        BlockedSource
+    ] = Field(
+        default_factory=list
+    )
+
+    retrieval_ms: float = 0.0
+    reranker_ms: float = 0.0
+    total_ms: float = 0.0
+
+
 class SourceClauseResponse(BaseModel):
     document_id: str
     version_id: str
