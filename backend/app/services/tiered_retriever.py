@@ -1281,10 +1281,15 @@ class TieredRetriever:
 
                 print(
                     "[TIERED] Query does not match "
-                    "radio domain. NO telecom fallback."
+                    "radio domain. Falling back to TELECOM."
                 )
 
-                return []
+                return self.search(
+                    query=query,
+                    top_k=top_k,
+                    where=where,
+                    domain="telecom",
+                )
 
             # Router d???k g?venliyse b?t?n radio_priority
             # collection aranabilir.
@@ -1493,6 +1498,40 @@ class TieredRetriever:
             or "telecom"
         ).strip().casefold()
 
+        # ----------------------------------------------------
+        # TELECOM INTENT OVERRIDE
+        # ----------------------------------------------------
+        # Cell Broadcast is a 3GPP telecom capability.
+        # Upstream callers may incorrectly classify the query
+        # as radio. Never allow that mistake to route CBS
+        # questions into NRSC/RDS evidence.
+        # ----------------------------------------------------
+
+        query_lower = clean_query.casefold()
+
+        is_cell_broadcast_query = (
+            "cell broadcast" in query_lower
+            or "cellbroadcast" in query_lower
+            or (
+                re.search(
+                    r"\bcbs\b",
+                    query_lower,
+                )
+                is not None
+            )
+        )
+
+        if (
+            is_cell_broadcast_query
+            and clean_domain == "radio"
+        ):
+            print(
+                "[TIERED] Telecom intent override: "
+                "CELL_BROADCAST -> TELECOM"
+            )
+
+            clean_domain = "telecom"
+
         if clean_domain not in {
             "telecom",
             "radio",
@@ -1565,6 +1604,162 @@ class TieredRetriever:
                     where=where,
                 )
             )
+
+        # ----------------------------------------------------
+        # CELL BROADCAST PRIORITY ROUTING
+        # ----------------------------------------------------
+        #
+        # 3GPP TS 23.041 is the canonical specification for
+        # Cell Broadcast Service behaviour, including message
+        # identifiers, serial numbers, update numbers and
+        # geographical scope.
+        #
+        # Do this before the generic document router so a
+        # semantically broad router result (for example ATIS)
+        # cannot displace the canonical 3GPP document.
+        # ----------------------------------------------------
+
+        query_lower = (
+            clean_query.casefold()
+        )
+
+        is_cell_broadcast_query = (
+            "cell broadcast"
+            in query_lower
+
+            or "cellbroadcast"
+            in query_lower
+
+            or (
+                re.search(
+                    r"\bcbs\b",
+                    query_lower,
+                )
+                is not None
+            )
+        )
+
+        if is_cell_broadcast_query:
+
+            cell_broadcast_documents = [
+                document
+                for document
+                in self._priority_documents
+                if (
+                    self._document_key(
+                        document.get("org"),
+                        document.get("code"),
+                    )
+                    == (
+                        "3gpp",
+                        "ts 23.041",
+                    )
+                )
+            ]
+
+            print(
+                "[TIERED] Cell Broadcast intent detected."
+            )
+
+            print(
+                "[TIERED] Forced Cell Broadcast documents:",
+                len(
+                    cell_broadcast_documents
+                ),
+            )
+
+            if cell_broadcast_documents:
+
+                # Search a wider candidate pool inside the
+                # canonical Cell Broadcast specification first.
+                cell_broadcast_matches = (
+                    self._priority_search(
+                        query=clean_query,
+                        top_k=max(
+                            top_k,
+                            12,
+                        ),
+                        where=where,
+                        routed_documents=(
+                            cell_broadcast_documents
+                        ),
+                    )
+                )
+
+                # Exact terminology in TS 23.041 should beat
+                # semantically-near chunks when the user asks
+                # specifically about the Serial Number field.
+                if (
+                    cell_broadcast_matches
+                    and "serial number"
+                    in query_lower
+                ):
+
+                    serial_matches = []
+
+                    other_matches = []
+
+                    for match in cell_broadcast_matches:
+
+                        searchable = " ".join(
+                            str(
+                                match.get(
+                                    key,
+                                    "",
+                                )
+                                or ""
+                            )
+                            for key in (
+                                "clause_title",
+                                "title",
+                                "text",
+                                "content",
+                                "chunk_text",
+                                "clause",
+                            )
+                        ).casefold()
+
+                        if (
+                            "serial number"
+                            in searchable
+                        ):
+                            serial_matches.append(
+                                match
+                            )
+                        else:
+                            other_matches.append(
+                                match
+                            )
+
+                    if serial_matches:
+
+                        print(
+                            "[TIERED] Cell Broadcast exact "
+                            "Serial Number evidence:",
+                            len(
+                                serial_matches
+                            ),
+                        )
+
+                        cell_broadcast_matches = (
+                            serial_matches
+                            + other_matches
+                        )
+
+                if cell_broadcast_matches:
+
+                    print(
+                        "[TIERED] Selected domain/tier: "
+                        "TELECOM / CELL_BROADCAST / "
+                        "3GPP TS 23.041"
+                    )
+
+                    return (
+                        cell_broadcast_matches[
+                            :top_k
+                        ]
+                    )
+
 
         # ----------------------------------------------------
         # DOCUMENT ROUTER
