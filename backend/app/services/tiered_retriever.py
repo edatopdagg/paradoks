@@ -53,6 +53,224 @@ _RADIO_DOCUMENT_KEYS = {
 }
 
 
+
+def _dab_announcement_match_relevance(
+    match: dict[str, Any],
+) -> int | None:
+    """
+    DAB announcement retrieval icin clause-aware relevance.
+
+    Salt metinde "announcement switching" gecmesi direct
+    normative evidence sayilmaz.
+
+    Ozellikle:
+    - EN 300 401 8.1.6.2 => normative switching evidence
+    - EN 300 401 8.1.6.1/8.1.6.0 => supporting evidence
+    - TS 101 756 => secondary registered-table/migration evidence
+    - Abbreviations/References/Definitions => direct evidence degil
+    """
+
+    metadata = (
+        match.get(
+            "metadata",
+            {},
+        )
+        or {}
+    )
+
+    document_code = str(
+        metadata.get(
+            "code",
+            match.get(
+                "code",
+                "",
+            ),
+        )
+        or ""
+    ).strip().casefold()
+
+    clause = str(
+        metadata.get(
+            "clause",
+            "",
+        )
+        or ""
+    ).strip().casefold()
+
+    clause_title = str(
+        metadata.get(
+            "clause_title",
+            "",
+        )
+        or ""
+    ).strip().casefold()
+
+    text_value = str(
+        match.get(
+            "text",
+            match.get(
+                "document",
+                "",
+            ),
+        )
+        or ""
+    ).casefold()
+
+    searchable = " ".join(
+        [
+            clause_title,
+            text_value,
+        ]
+    )
+
+    # --------------------------------------------------------
+    # LOW-VALUE / REFERENCE-LIKE CLAUSES
+    # --------------------------------------------------------
+
+    low_value_titles = {
+        "abbreviations",
+        "references",
+        "normative references",
+        "informative references",
+        "terms",
+        "definitions",
+        "terms and definitions",
+    }
+
+    if (
+        clause_title in low_value_titles
+        or clause_title.startswith(
+            "definition of terms"
+        )
+        or clause_title.startswith(
+            "definitions of"
+        )
+    ):
+        return None
+
+    has_switching = (
+        "announcement switching"
+        in searchable
+        or "fig 0/19"
+        in searchable
+    )
+
+    has_support = (
+        "announcement support"
+        in searchable
+        or "fig 0/18"
+        in searchable
+    )
+
+    # --------------------------------------------------------
+    # ETSI EN 300 401
+    # --------------------------------------------------------
+
+    if "en 300 401" in document_code:
+
+        # Direct normative switching definition.
+        if (
+            clause == "8.1.6.2"
+            or clause_title
+            == "announcement switching"
+        ):
+            return 1000
+
+        # Direct support/permission definition.
+        if (
+            clause == "8.1.6.1"
+            or clause_title
+            == "announcement support"
+        ):
+            return 850
+
+        # General announcement behaviour.
+        if (
+            clause == "8.1.6.0"
+            and (
+                "announcement feature"
+                in searchable
+                or "fig 0/19"
+                in searchable
+                or "interruption"
+                in searchable
+            )
+        ):
+            return 700
+
+        # Other-ensemble switching/support are related but
+        # should remain below tuned-ensemble clauses.
+        if (
+            clause == "8.1.6.4"
+            or clause_title
+            == "oe announcement switching"
+        ):
+            return 550
+
+        if (
+            clause == "8.1.6.3"
+            or clause_title
+            == "oe announcement support"
+        ):
+            return 500
+
+        # Safety net only inside the actual announcement
+        # clause family.
+        if (
+            clause.startswith(
+                "8.1.6"
+            )
+            and (
+                has_switching
+                or has_support
+            )
+        ):
+            return 600
+
+        # Merely mentioning ASw/announcement switching in an
+        # unrelated EN 300 401 clause is not direct evidence.
+        return None
+
+    # --------------------------------------------------------
+    # ETSI TS 101 756
+    # --------------------------------------------------------
+
+    if "ts 101 756" in document_code:
+
+        if (
+            has_switching
+            or has_support
+            or "deprecated figs"
+            in searchable
+            or "deprecated fig"
+            in searchable
+        ):
+            return 350
+
+        return None
+
+    # --------------------------------------------------------
+    # OTHER RADIO DOCUMENTS
+    # --------------------------------------------------------
+
+    # Keep genuinely direct announcement-switching material
+    # from another radio standard, but below EN 300 401.
+    if (
+        clause_title
+        in {
+            "announcement switching",
+            "announcement support",
+        }
+        and (
+            has_switching
+            or has_support
+        )
+    ):
+        return 250
+
+    return None
+
+
 class TieredRetriever:
     """
     Paradoks iki katmanlı retrieval.
@@ -1329,6 +1547,137 @@ class TieredRetriever:
             collection=self.radio_priority_collection,
         )
 
+        # ----------------------------------------------------
+        # DAB ANNOUNCEMENT RECALL ENRICHMENT
+        # ----------------------------------------------------
+        #
+        # Natural-language receiver troubleshooting questions
+        # may semantically retrieve the general announcement
+        # clause while missing the normative FIG 0/19 clause.
+        #
+        # Run one additional canonical technical retrieval and
+        # merge its candidates before clause-aware narrowing.
+        # This improves recall only; final ordering is still
+        # decided by normative clause identity.
+        # ----------------------------------------------------
+
+        dab_announcement_recall_query = (
+            sub_domain == "DAB"
+            and (
+                "announcement" in query_lower
+                or "anons" in query_lower
+                or "duyuru" in query_lower
+            )
+            and (
+                "switch" in query_lower
+                or "support" in query_lower
+                or "receiver" in query_lower
+                or "al?c?" in query_lower
+                or "alici" in query_lower
+                or "ge?i?" in query_lower
+                or "gecis" in query_lower
+                or "anahtarl" in query_lower
+            )
+        )
+
+        if dab_announcement_recall_query:
+
+            supplemental_matches = self._priority_search(
+                query=(
+                    "Digital Audio Broadcasting DAB "
+                    "announcement switching FIG 0/19 ASw "
+                    "Cluster Id New flag SubChId receiver "
+                    "announcement support FIG 0/18"
+                ),
+                top_k=max(
+                    top_k,
+                    12,
+                ),
+                where=where,
+                routed_documents=routed_documents,
+                collection=self.radio_priority_collection,
+            )
+
+            seen_keys = set()
+
+            merged_matches = []
+
+            for candidate in (
+                list(matches)
+                + list(supplemental_matches)
+            ):
+
+                metadata = (
+                    candidate.get(
+                        "metadata",
+                        {},
+                    )
+                    or {}
+                )
+
+                candidate_key = (
+                    str(
+                        metadata.get(
+                            "source_id",
+                            "",
+                        )
+                        or candidate.get(
+                            "id",
+                            "",
+                        )
+                    ).strip()
+                    or "|".join(
+                        [
+                            str(
+                                metadata.get(
+                                    "code",
+                                    "",
+                                )
+                            ),
+                            str(
+                                metadata.get(
+                                    "version",
+                                    "",
+                                )
+                            ),
+                            str(
+                                metadata.get(
+                                    "clause",
+                                    "",
+                                )
+                            ),
+                            str(
+                                candidate.get(
+                                    "text",
+                                    "",
+                                )
+                            )[:160],
+                        ]
+                    )
+                )
+
+                if candidate_key in seen_keys:
+                    continue
+
+                seen_keys.add(
+                    candidate_key
+                )
+
+                merged_matches.append(
+                    candidate
+                )
+
+            matches = merged_matches
+
+            print(
+                "[TIERED] DAB announcement "
+                "recall enrichment:",
+                len(supplemental_matches),
+                "supplemental /",
+                len(matches),
+                "merged",
+            )
+
         print(
             "[TIERED] Radio candidates:",
             len(matches),
@@ -1422,23 +1771,36 @@ class TieredRetriever:
         # DAB ANNOUNCEMENT EXACT EVIDENCE NARROWING
         # ----------------------------------------------------
         #
-        # DAB announcement switching/support queries can be
-        # semantically close to service-following, bearer
-        # matching and generic DAB receiver clauses.
+        # Direct normative evidence is determined from actual
+        # document/clause identity, not merely from words such
+        # as "announcement switching" appearing somewhere in
+        # the chunk.
         #
-        # When direct announcement evidence exists, preserve
-        # those clauses and prefer ETSI EN 300 401, which
-        # defines the actual DAB announcement signalling.
+        # This prevents clauses such as:
+        #
+        #   3.3 Abbreviations
+        #
+        # from outranking:
+        #
+        #   8.1.6.2 Announcement switching
+        #
+        # merely because the abbreviation table contains:
+        #
+        #   ASw Announcement Switching flags
         # ----------------------------------------------------
 
         if sub_domain == "DAB":
 
             dab_announcement_query = (
-                "announcement" in query_lower
+                "announcement"
+                in query_lower
                 and (
-                    "switch" in query_lower
-                    or "support" in query_lower
-                    or "receiver" in query_lower
+                    "switch"
+                    in query_lower
+                    or "support"
+                    in query_lower
+                    or "receiver"
+                    in query_lower
                 )
             )
 
@@ -1448,95 +1810,14 @@ class TieredRetriever:
 
                 for match in matches:
 
-                    metadata = (
-                        match.get(
-                            "metadata",
-                            {},
+                    relevance = (
+                        _dab_announcement_match_relevance(
+                            match
                         )
-                        or {}
                     )
 
-                    code = str(
-                        metadata.get(
-                            "code",
-                            match.get(
-                                "code",
-                                "",
-                            ),
-                        )
-                        or ""
-                    ).casefold()
-
-                    searchable = " ".join(
-                        [
-                            str(
-                                match.get(
-                                    "title",
-                                    "",
-                                )
-                            ),
-                            str(
-                                match.get(
-                                    "text",
-                                    "",
-                                )
-                            ),
-                            str(
-                                metadata.get(
-                                    "clause_title",
-                                    "",
-                                )
-                            ),
-                            str(
-                                metadata.get(
-                                    "clause",
-                                    "",
-                                )
-                            ),
-                        ]
-                    ).casefold()
-
-                    has_switching = (
-                        "announcement switching"
-                        in searchable
-                        or "fig 0/19"
-                        in searchable
-                    )
-
-                    has_support = (
-                        "announcement support"
-                        in searchable
-                        or "fig 0/18"
-                        in searchable
-                    )
-
-                    if not (
-                        has_switching
-                        or has_support
-                    ):
+                    if relevance is None:
                         continue
-
-                    relevance = 0
-
-                    if (
-                        "en 300 401"
-                        in code
-                        or "en 300 401"
-                        in searchable
-                    ):
-                        relevance += 100
-
-                    if has_switching:
-                        relevance += 30
-
-                    if has_support:
-                        relevance += 20
-
-                    if (
-                        "ts 101 756"
-                        in code
-                    ):
-                        relevance += 10
 
                     distance = float(
                         match.get(
@@ -1565,8 +1846,7 @@ class TieredRetriever:
 
                     matches = [
                         item[2]
-                        for item
-                        in direct_matches[
+                        for item in direct_matches[
                             :top_k
                         ]
                     ]
