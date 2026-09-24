@@ -519,6 +519,169 @@ def _drop_service_extensions_for_generic_reference_question(
     return filtered or results
 
 
+
+def _dab_announcement_direct_bonus(
+    *,
+    question: str,
+    result: dict[str, Any],
+) -> float:
+    """
+    Prefer clauses that directly define DAB announcement
+    support/switching over adjacent service-following or
+    reference-only material.
+
+    This applies only when the question is explicitly about
+    DAB announcement signalling.
+    """
+
+    question_folded = str(
+        question
+        or ""
+    ).casefold()
+
+    explicit_dab = bool(
+        "digital audio broadcast"
+        in question_folded
+        or "digital audio broadcasting"
+        in question_folded
+        or "dab+" in question_folded
+        or "dab" in question_folded
+    )
+
+    announcement_question = bool(
+        "announcement"
+        in question_folded
+        and (
+            "switch" in question_folded
+            or "support" in question_folded
+            or "receiver" in question_folded
+        )
+    )
+
+    if not (
+        explicit_dab
+        and announcement_question
+    ):
+        return 0.0
+
+    metadata = (
+        result.get(
+            "metadata",
+            {},
+        )
+        or {}
+    )
+
+    searchable = " ".join(
+        [
+            str(
+                result.get(
+                    "title",
+                    "",
+                )
+            ),
+            str(
+                result.get(
+                    "text",
+                    "",
+                )
+            ),
+            str(
+                result.get(
+                    "code",
+                    "",
+                )
+            ),
+            str(
+                metadata.get(
+                    "code",
+                    "",
+                )
+            ),
+            str(
+                metadata.get(
+                    "clause_title",
+                    "",
+                )
+            ),
+            str(
+                metadata.get(
+                    "clause",
+                    "",
+                )
+            ),
+        ]
+    ).casefold()
+
+    has_switching = bool(
+        "announcement switching"
+        in searchable
+        or "fig 0/19"
+        in searchable
+    )
+
+    has_support = bool(
+        "announcement support"
+        in searchable
+        or "fig 0/18"
+        in searchable
+    )
+
+    if not (
+        has_switching
+        or has_support
+    ):
+        return 0.0
+
+    # Direct topic match.
+    bonus = 3.0
+
+    if has_switching:
+        bonus += 1.0
+
+    if has_support:
+        bonus += 0.5
+
+    document_code = " ".join(
+        [
+            str(
+                result.get(
+                    "code",
+                    "",
+                )
+                or ""
+            ),
+            str(
+                metadata.get(
+                    "code",
+                    "",
+                )
+                or ""
+            ),
+        ]
+    ).casefold()
+
+    # Document identity must come from the actual code field,
+    # not from references mentioned inside the clause text.
+    #
+    # Example:
+    # TS 101 756 may say "see ETSI EN 300 401".
+    # That must not make TS 101 756 receive the EN 300 401 bonus.
+    if "en 300 401" in document_code:
+        # EN 300 401 directly defines the normative DAB
+        # announcement signalling structure. It must outrank
+        # supporting registered-table/migration material when
+        # both are direct topic matches.
+        bonus += 6.0
+
+    elif "ts 101 756" in document_code:
+        # Supporting evidence remains valuable, but should not
+        # outrank the normative system specification.
+        bonus += 1.0
+
+    return bonus
+
+
 def prioritize_evidence(
     question: str,
     results: list[dict[str, Any]],
@@ -595,6 +758,11 @@ def prioritize_evidence(
                 service_specific_question=(
                     service_specific_question
                 ),
+            )
+            +
+            _dab_announcement_direct_bonus(
+                question=question,
+                result=result,
             )
         )
 

@@ -1417,6 +1417,166 @@ class TieredRetriever:
                     len(matches),
                 )
 
+
+        # ----------------------------------------------------
+        # DAB ANNOUNCEMENT EXACT EVIDENCE NARROWING
+        # ----------------------------------------------------
+        #
+        # DAB announcement switching/support queries can be
+        # semantically close to service-following, bearer
+        # matching and generic DAB receiver clauses.
+        #
+        # When direct announcement evidence exists, preserve
+        # those clauses and prefer ETSI EN 300 401, which
+        # defines the actual DAB announcement signalling.
+        # ----------------------------------------------------
+
+        if sub_domain == "DAB":
+
+            dab_announcement_query = (
+                "announcement" in query_lower
+                and (
+                    "switch" in query_lower
+                    or "support" in query_lower
+                    or "receiver" in query_lower
+                )
+            )
+
+            if dab_announcement_query:
+
+                direct_matches = []
+
+                for match in matches:
+
+                    metadata = (
+                        match.get(
+                            "metadata",
+                            {},
+                        )
+                        or {}
+                    )
+
+                    code = str(
+                        metadata.get(
+                            "code",
+                            match.get(
+                                "code",
+                                "",
+                            ),
+                        )
+                        or ""
+                    ).casefold()
+
+                    searchable = " ".join(
+                        [
+                            str(
+                                match.get(
+                                    "title",
+                                    "",
+                                )
+                            ),
+                            str(
+                                match.get(
+                                    "text",
+                                    "",
+                                )
+                            ),
+                            str(
+                                metadata.get(
+                                    "clause_title",
+                                    "",
+                                )
+                            ),
+                            str(
+                                metadata.get(
+                                    "clause",
+                                    "",
+                                )
+                            ),
+                        ]
+                    ).casefold()
+
+                    has_switching = (
+                        "announcement switching"
+                        in searchable
+                        or "fig 0/19"
+                        in searchable
+                    )
+
+                    has_support = (
+                        "announcement support"
+                        in searchable
+                        or "fig 0/18"
+                        in searchable
+                    )
+
+                    if not (
+                        has_switching
+                        or has_support
+                    ):
+                        continue
+
+                    relevance = 0
+
+                    if (
+                        "en 300 401"
+                        in code
+                        or "en 300 401"
+                        in searchable
+                    ):
+                        relevance += 100
+
+                    if has_switching:
+                        relevance += 30
+
+                    if has_support:
+                        relevance += 20
+
+                    if (
+                        "ts 101 756"
+                        in code
+                    ):
+                        relevance += 10
+
+                    distance = float(
+                        match.get(
+                            "distance",
+                            999.0,
+                        )
+                        or 999.0
+                    )
+
+                    direct_matches.append(
+                        (
+                            relevance,
+                            distance,
+                            match,
+                        )
+                    )
+
+                if direct_matches:
+
+                    direct_matches.sort(
+                        key=lambda item: (
+                            -item[0],
+                            item[1],
+                        )
+                    )
+
+                    matches = [
+                        item[2]
+                        for item
+                        in direct_matches[
+                            :top_k
+                        ]
+                    ]
+
+                    print(
+                        "[TIERED] DAB announcement "
+                        "exact evidence:",
+                        len(matches),
+                    )
+
         if not matches:
 
             print(
