@@ -271,6 +271,55 @@ def _dab_announcement_match_relevance(
     return None
 
 
+
+_REFERENCE_POINT_QUERY_PATTERN = re.compile(
+    r"\b(N\d{1,2})\b",
+    re.IGNORECASE,
+)
+
+
+def _explicit_5gs_reference_point(
+    query: str,
+) -> str | None:
+    """
+    Explicit N1/N2/N3/... reference-point sorularini yakalar.
+
+    Yalnizca N1 kelimesinin gecmesi yeterli degildir.
+    Kullanici ayni zamanda bunun bir reference point /
+    referans noktasi oldugunu acikca sormalidir.
+    """
+
+    folded = str(
+        query
+        or ""
+    ).casefold()
+
+    reference_point_intent = (
+        "reference point"
+        in folded
+        or "referans nokta"
+        in folded
+    )
+
+    if not reference_point_intent:
+        return None
+
+    match = (
+        _REFERENCE_POINT_QUERY_PATTERN.search(
+            query
+            or ""
+        )
+    )
+
+    if match is None:
+        return None
+
+    return (
+        match.group(1)
+        .upper()
+    )
+
+
 class TieredRetriever:
     """
     Paradoks iki katmanlı retrieval.
@@ -2062,6 +2111,357 @@ class TieredRetriever:
                     where=where,
                 )
             )
+
+        # ----------------------------------------------------
+        # 5GS REFERENCE-POINT CANONICAL ROUTING
+        # ----------------------------------------------------
+        #
+        # Explicit N1/N2/N3/... reference-point questions
+        # belong to 3GPP TS 23.501.
+        #
+        # Prefer the priority shelf when TS 23.501 is present.
+        # Production may intentionally keep TS 23.501 only in
+        # the main V3/back shelf; in that case search BACK with
+        # an exact document filter instead of falling through
+        # to the generic semantic document router.
+        #
+        # The answer is never hard-coded here. This block only
+        # guarantees that the canonical specification enters
+        # the candidate set.
+        # ----------------------------------------------------
+
+        reference_point = (
+            _explicit_5gs_reference_point(
+                clean_query
+            )
+        )
+
+        if (
+            reference_point
+            and not is_cell_broadcast_query
+        ):
+
+            reference_point_documents = [
+                document
+                for document
+                in self._priority_documents
+                if (
+                    self._document_key(
+                        document.get("org"),
+                        document.get("code"),
+                    )
+                    == (
+                        "3gpp",
+                        "ts 23.501",
+                    )
+                )
+            ]
+
+            print(
+                "[TIERED] 5GS reference-point intent:",
+                reference_point,
+            )
+
+            print(
+                "[TIERED] Forced reference-point documents:",
+                len(
+                    reference_point_documents
+                ),
+            )
+
+            query_variants = [
+                clean_query,
+                (
+                    f"{reference_point} "
+                    "reference point "
+                    "5G System architecture "
+                    "reference point between "
+                    "network functions"
+                ),
+            ]
+
+            if reference_point == "N1":
+
+                query_variants.append(
+                    (
+                        "N1 reference point "
+                        "UE AMF NAS signalling "
+                        "5G System architecture"
+                    )
+                )
+
+            merged_matches = []
+            seen_keys = set()
+
+            reference_point_where = {
+                "$and": [
+                    {
+                        "org": "3GPP"
+                    },
+                    {
+                        "code": "TS 23.501"
+                    },
+                ]
+            }
+
+            for retrieval_query in query_variants:
+
+                if reference_point_documents:
+
+                    candidate_matches = (
+                        self._priority_search(
+                            query=retrieval_query,
+                            top_k=max(
+                                top_k,
+                                12,
+                            ),
+                            where=None,
+                            routed_documents=(
+                                reference_point_documents
+                            ),
+                        )
+                    )
+
+                else:
+
+                    candidate_matches = (
+                        self.back_retriever.search(
+                            query=retrieval_query,
+                            top_k=max(
+                                top_k,
+                                24,
+                            ),
+                            where=(
+                                reference_point_where
+                            ),
+                        )
+                    )
+
+                for candidate in candidate_matches:
+
+                    metadata = (
+                        candidate.get(
+                            "metadata",
+                            {},
+                        )
+                        or {}
+                    )
+
+                    candidate_key = (
+                        str(
+                            metadata.get(
+                                "source_id",
+                                "",
+                            )
+                            or candidate.get(
+                                "id",
+                                "",
+                            )
+                        ).strip()
+                        or "|".join(
+                            [
+                                str(
+                                    metadata.get(
+                                        "code",
+                                        "",
+                                    )
+                                ),
+                                str(
+                                    metadata.get(
+                                        "version",
+                                        "",
+                                    )
+                                ),
+                                str(
+                                    metadata.get(
+                                        "clause",
+                                        "",
+                                    )
+                                ),
+                                str(
+                                    candidate.get(
+                                        "text",
+                                        "",
+                                    )
+                                )[:160],
+                            ]
+                        )
+                    )
+
+                    if candidate_key in seen_keys:
+                        continue
+
+                    seen_keys.add(
+                        candidate_key
+                    )
+
+                    merged_matches.append(
+                        candidate
+                    )
+
+            if merged_matches:
+
+                exact_pattern = re.compile(
+                    rf"\b{re.escape(reference_point)}\b",
+                    re.IGNORECASE,
+                )
+
+                ranked_matches = []
+
+                for (
+                    original_index,
+                    match,
+                ) in enumerate(
+                    merged_matches
+                ):
+
+                    metadata = (
+                        match.get(
+                            "metadata",
+                            {},
+                        )
+                        or {}
+                    )
+
+                    searchable = " ".join(
+                        [
+                            str(
+                                metadata.get(
+                                    "clause_title",
+                                    "",
+                                )
+                            ),
+                            str(
+                                metadata.get(
+                                    "clause",
+                                    "",
+                                )
+                            ),
+                            str(
+                                match.get(
+                                    "text",
+                                    "",
+                                )
+                            ),
+                        ]
+                    )
+
+                    searchable_folded = (
+                        searchable.casefold()
+                    )
+
+                    relevance = 0
+
+                    if (
+                        exact_pattern.search(
+                            searchable
+                        )
+                        is not None
+                    ):
+                        relevance += 100
+
+                    if (
+                        "reference point between"
+                        in searchable_folded
+                    ):
+                        relevance += 60
+
+                    elif (
+                        "reference point"
+                        in searchable_folded
+                    ):
+                        relevance += 30
+
+                    if (
+                        reference_point == "N1"
+                        and "ue"
+                        in searchable_folded
+                    ):
+                        relevance += 20
+
+                    if (
+                        reference_point == "N1"
+                        and "amf"
+                        in searchable_folded
+                    ):
+                        relevance += 20
+
+                    if (
+                        reference_point == "N1"
+                        and "nas"
+                        in searchable_folded
+                    ):
+                        relevance += 20
+
+                    distance = float(
+                        match.get(
+                            "distance",
+                            999.0,
+                        )
+                        or 999.0
+                    )
+
+                    ranked_matches.append(
+                        (
+                            relevance,
+                            distance,
+                            original_index,
+                            match,
+                        )
+                    )
+
+                direct_matches = [
+                    item
+                    for item
+                    in ranked_matches
+                    if item[0] > 0
+                ]
+
+                selected_pool = (
+                    direct_matches
+                    or ranked_matches
+                )
+
+                selected_pool.sort(
+                    key=lambda item: (
+                        -item[0],
+                        item[1],
+                        item[2],
+                    )
+                )
+
+                reference_matches = [
+                    item[3]
+                    for item
+                    in selected_pool[
+                        :top_k
+                    ]
+                ]
+
+                if reference_matches:
+
+                    selected_shelf = (
+                        "PRIORITY"
+                        if reference_point_documents
+                        else "BACK"
+                    )
+
+                    print(
+                        "[TIERED] Selected tier:",
+                        selected_shelf,
+                        "(5GS reference point)",
+                    )
+
+                    print(
+                        "[TIERED] Reference-point candidates:",
+                        len(
+                            reference_matches
+                        ),
+                    )
+
+                    return (
+                        reference_matches
+                    )
 
         # ----------------------------------------------------
         # CELL BROADCAST PRIORITY ROUTING
