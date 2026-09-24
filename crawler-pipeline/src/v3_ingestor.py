@@ -665,6 +665,71 @@ def _prepare_ietf_document_text(
     )
 
 
+
+# =========================================================
+# ETSI RELIABLE TOC DETECTION
+# =========================================================
+
+_ETSI_TOC_ENTRY_PATTERN = re.compile(
+    r"^\s*"
+    r"(?P<number>\d+(?:\.\d+)*)"
+    r"[ \t]+"
+    r"(?P<title>.+?)"
+    r"[ \t]+"
+    r"(?:\.[ \t]*){3,}"
+    r"(?P<page>\d+)"
+    r"\s*$"
+)
+
+
+def _has_reliable_etsi_toc(
+    document_text: str,
+) -> bool:
+    """
+    Yeni ETSI TOC-guided clause parser'in kullanabilmesi icin
+    gercek bir numbered table-of-contents var mi kontrol eder.
+
+    Dotted leader + page number tasiyan en az 5 benzersiz
+    clause girdisi yeterli kabul edilir.
+
+    Ornek:
+        8.1.6.2 Announcement switching ........ 74
+        15 Radio frequency characteristics .... 118
+    """
+
+    clause_numbers: set[str] = set()
+
+    for raw_line in (
+        document_text
+        or ""
+    ).splitlines():
+
+        match = (
+            _ETSI_TOC_ENTRY_PATTERN.match(
+                raw_line
+            )
+        )
+
+        if match is None:
+            continue
+
+        clause_numbers.add(
+            (
+                match.group(
+                    "number"
+                )
+                or ""
+            ).strip()
+        )
+
+        if len(
+            clause_numbers
+        ) >= 5:
+            return True
+
+    return False
+
+
 def _prepare_document_text(
     org: str,
     document_text: str,
@@ -680,6 +745,35 @@ def _prepare_document_text(
         )
 
     if normalized_org != "ETSI":
+        return document_text
+
+    # -----------------------------------------------------
+    # ETSI TOC-GUIDED PARSER CONTRACT
+    # -----------------------------------------------------
+    #
+    # Yeni ETSI parser dogru clause yapisini belgenin kendi
+    # Table of Contents bilgisinden dogrular.
+    #
+    # Eski preprocessing:
+    # - dotted TOC satirlarini siliyordu;
+    # - son "1 Scope" oncesini tamamen kesiyordu.
+    #
+    # Bunun sonucunda TOC-guided parser devre disi kaliyor ve
+    # generic fallback tablo/sekil satirlarini sahte clause
+    # olarak yorumlayabiliyordu:
+    #
+    #   3 bits
+    #   15 r-15
+    #   15 logical
+    #
+    # Guvenilir ETSI TOC mevcutsa original extraction aynen
+    # korunur. TOC bulunmayan eski/istisnai ETSI belgelerinde
+    # legacy cleanup davranisi devam eder.
+    # -----------------------------------------------------
+
+    if _has_reliable_etsi_toc(
+        document_text
+    ):
         return document_text
 
     cleaned_lines: list[str] = []
