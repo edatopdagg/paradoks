@@ -107,6 +107,80 @@ GENERIC_CLAUSE_HEADING = re.compile(
 )
 
 
+_GENERIC_HEADING_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "by",
+    "for",
+    "in",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "with",
+}
+
+
+def _is_plausible_generic_clause_title(
+    title: str,
+) -> bool:
+    """
+    Reject PDF figure/table/math artefacts that accidentally
+    look like numeric clause headings.
+
+    Examples rejected:
+        15 or 31
+        15 0
+        7 3
+
+    Examples preserved:
+        1 Scope
+        8.1.6.2 Announcement switching
+        4 UE
+        5 IP
+    """
+
+    clean = (
+        title
+        or ""
+    ).strip()
+
+    if not clean:
+        return False
+
+    words = re.findall(
+        r"[^\W\d_][\w-]*",
+        clean,
+        flags=re.UNICODE,
+    )
+
+    if not words:
+        return False
+
+    for word in words:
+
+        folded = word.casefold()
+
+        if (
+            len(word) >= 3
+            and folded
+            not in _GENERIC_HEADING_STOPWORDS
+        ):
+            return True
+
+        if (
+            len(word) >= 2
+            and word.isupper()
+        ):
+            return True
+
+    return False
+
+
 # =========================================================
 # 3GPP CLAUSE TOKEN
 #
@@ -2985,7 +3059,12 @@ def _split_generic_clauses(
             )
         )
 
-        if match:
+        if (
+            match
+            and _is_plausible_generic_clause_title(
+                match.group(2)
+            )
+        ):
 
             if current:
 
@@ -3022,6 +3101,378 @@ def _split_generic_clauses(
         for (
             clause_no,
             clause_title,
+            body,
+        ) in clauses
+    ]
+
+
+
+# =========================================================
+# ETSI TOC-GUIDED CLAUSE SPLITTER
+# =========================================================
+
+_ETSI_TOC_ENTRY = re.compile(
+    r"^(\d+(?:\.\d+)*)[ \t]+"
+    r"(.+?)[ \t]+"
+    r"(?:\.[ \t]*){3,}"
+    r"(\d+)[ \t]*$"
+)
+
+
+def _normalize_etsi_heading_title(
+    value: str,
+) -> str:
+
+    cleaned = (
+        value
+        or ""
+    ).casefold().strip()
+
+    cleaned = re.sub(
+        r"[^\w]+",
+        " ",
+        cleaned,
+        flags=re.UNICODE,
+    )
+
+    return re.sub(
+        r"\s+",
+        " ",
+        cleaned,
+    ).strip()
+
+
+def _parse_etsi_toc_entry(
+    line: str,
+) -> tuple[
+    str,
+    str,
+] | None:
+
+    candidate = (
+        line
+        or ""
+    ).strip()
+
+    if not candidate:
+        return None
+
+    match = (
+        _ETSI_TOC_ENTRY.match(
+            candidate
+        )
+    )
+
+    if match is None:
+        return None
+
+    number = (
+        match.group(1)
+        or ""
+    ).strip()
+
+    title = (
+        match.group(2)
+        or ""
+    ).strip()
+
+    if not (
+        number
+        and title
+    ):
+        return None
+
+    return (
+        number,
+        title,
+    )
+
+
+def _etsi_heading_matches_toc(
+    *,
+    candidate_title: str,
+    toc_title: str,
+) -> bool:
+
+    left = (
+        _normalize_etsi_heading_title(
+            candidate_title
+        )
+    )
+
+    right = (
+        _normalize_etsi_heading_title(
+            toc_title
+        )
+    )
+
+    if not (
+        left
+        and right
+    ):
+        return False
+
+    if left == right:
+        return True
+
+    score = SequenceMatcher(
+        None,
+        left,
+        right,
+    ).ratio()
+
+    # ETSI PDF extraction occasionally splits words:
+    #
+    #   "Announce ment support"
+    #   "Announcement support"
+    #
+    # TOC guidance lets us safely tolerate that damage,
+    # while rejecting figure/table artefacts such as:
+    #
+    #   15 r-15
+    #   15 logical
+    #   15 b10 90 7 15
+    #
+    return score >= 0.72
+
+
+def _split_etsi_clauses(
+    document_text: str,
+) -> list[
+    tuple[str, str, str]
+]:
+
+    if not document_text:
+        return []
+
+    lines = (
+        document_text.splitlines()
+    )
+
+    toc_entries: dict[
+        str,
+        str,
+    ] = {}
+
+    toc_indices: list[int] = []
+
+    for index, raw_line in enumerate(
+        lines
+    ):
+
+        parsed = (
+            _parse_etsi_toc_entry(
+                raw_line
+            )
+        )
+
+        if parsed is None:
+            continue
+
+        number, title = parsed
+
+        toc_entries.setdefault(
+            number,
+            title,
+        )
+
+        toc_indices.append(
+            index
+        )
+
+    # No trustworthy TOC -> caller may use generic fallback.
+    if (
+        len(toc_entries) < 5
+        or not toc_indices
+    ):
+        return []
+
+    # Skip the entire table of contents. Parsing starts only
+    # after the final TOC-style numbered entry.
+    search_start = (
+        max(toc_indices)
+        + 1
+    )
+
+    content_start = None
+
+    for index in range(
+        search_start,
+        len(lines),
+    ):
+
+        candidate = (
+            lines[index]
+            or ""
+        ).rstrip()
+
+        if not candidate:
+            continue
+
+        if (
+            candidate
+            != candidate.lstrip()
+        ):
+            continue
+
+        match = (
+            GENERIC_CLAUSE_HEADING.match(
+                candidate
+            )
+        )
+
+        if match is None:
+            continue
+
+        number = (
+            match.group(1)
+            or ""
+        ).strip()
+
+        title = (
+            match.group(2)
+            or ""
+        ).strip()
+
+        expected_title = (
+            toc_entries.get(
+                number
+            )
+        )
+
+        if expected_title is None:
+            continue
+
+        if not (
+            _is_plausible_generic_clause_title(
+                title
+            )
+        ):
+            continue
+
+        if not (
+            _etsi_heading_matches_toc(
+                candidate_title=title,
+                toc_title=expected_title,
+            )
+        ):
+            continue
+
+        content_start = index
+        break
+
+    if content_start is None:
+        return []
+
+    clauses: list[
+        list
+    ] = []
+
+    current = None
+
+    for raw_line in lines[
+        content_start:
+    ]:
+
+        candidate = (
+            raw_line.rstrip()
+        )
+
+        if not candidate:
+            if current:
+                current[2].append(
+                    raw_line
+                )
+            continue
+
+        if (
+            candidate
+            != candidate.lstrip()
+        ):
+            if current:
+                current[2].append(
+                    raw_line
+                )
+            continue
+
+        match = (
+            GENERIC_CLAUSE_HEADING.match(
+                candidate
+            )
+        )
+
+        accepted_heading = False
+
+        if match is not None:
+
+            number = (
+                match.group(1)
+                or ""
+            ).strip()
+
+            title = (
+                match.group(2)
+                or ""
+            ).strip()
+
+            expected_title = (
+                toc_entries.get(
+                    number
+                )
+            )
+
+            if (
+                expected_title is not None
+                and
+                _is_plausible_generic_clause_title(
+                    title
+                )
+                and
+                _etsi_heading_matches_toc(
+                    candidate_title=title,
+                    toc_title=expected_title,
+                )
+            ):
+
+                if current:
+                    clauses.append(
+                        current
+                    )
+
+                current = [
+                    number,
+                    # Prefer clean body heading over damaged
+                    # TOC spelling when available.
+                    title,
+                    [],
+                ]
+
+                accepted_heading = True
+
+        if accepted_heading:
+            continue
+
+        if current:
+            current[2].append(
+                raw_line
+            )
+
+    if current:
+        clauses.append(
+            current
+        )
+
+    return [
+        (
+            number,
+            title,
+            "\n".join(
+                body
+            ).strip(),
+        )
+        for (
+            number,
+            title,
             body,
         ) in clauses
     ]
@@ -3204,6 +3655,23 @@ def split_into_clauses(
             )
         )
 
+
+    if org == "ETSI":
+
+        etsi_clauses = (
+            _split_etsi_clauses(
+                document_text
+            )
+        )
+
+        if etsi_clauses:
+            return etsi_clauses
+
+        return (
+            _split_generic_clauses(
+                document_text
+            )
+        )
 
     if org == "3GPP":
 
