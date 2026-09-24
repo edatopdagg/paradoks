@@ -1140,8 +1140,23 @@ class TieredRetriever:
         forced_radio_keys = None
         sub_domain = None
 
-        if (
-            "rds" in query_lower
+        explicit_dab = bool(
+            "digital audio broadcast"
+            in query_lower
+            or "digital audio broadcasting"
+            in query_lower
+            or "dab+" in query_lower
+            or re.search(
+                r"\bdab\b",
+                query_lower,
+            )
+            or "he-aac" in query_lower
+        )
+
+        explicit_rds = bool(
+            "radio data system"
+            in query_lower
+            or "rds" in query_lower
             or "rbds" in query_lower
             or re.search(
                 r"\btp\b",
@@ -1151,23 +1166,17 @@ class TieredRetriever:
                 r"\bta\b",
                 query_lower,
             )
-        ):
+        )
 
-            sub_domain = "RDS/RBDS"
-
-            forced_radio_keys = {
-                ("nrsc", "nrsc-4-b"),
-                ("nrsc", "nrsc-g300-c"),
-            }
-
-        elif (
-            "dab+" in query_lower
-            or re.search(
-                r"\bdab\b",
-                query_lower,
-            )
-            or "he-aac" in query_lower
-        ):
+        # Explicit DAB intent must win over incidental RDS/TP/TA
+        # tokens that may be introduced by query expansion.
+        #
+        # Example:
+        # "RDS/RBDS TA/TP ... for DAB broadcasting"
+        #
+        # is still a DAB problem when the user's requested
+        # broadcast system is explicitly DAB.
+        if explicit_dab:
 
             sub_domain = "DAB"
 
@@ -1180,6 +1189,15 @@ class TieredRetriever:
                 ("etsi", "ts 103 551"),
                 ("etsi", "ts 101 499"),
                 ("etsi", "ts 102 980"),
+            }
+
+        elif explicit_rds:
+
+            sub_domain = "RDS/RBDS"
+
+            forced_radio_keys = {
+                ("nrsc", "nrsc-4-b"),
+                ("nrsc", "nrsc-g300-c"),
             }
 
         elif (
