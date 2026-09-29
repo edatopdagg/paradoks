@@ -526,3 +526,171 @@ def generate_evidence(
         "reranker_ms": reranker_ms,
         "total_ms": total_ms,
     }
+
+
+# ============================================================
+# PARADOKS_DAB_EXPLICIT_FIG_LOCK_V1
+# ============================================================
+#
+# Explicit DAB FIG identifiers are exact standard identities.
+#
+# FIG 0/18 -> EN 300 401 8.1.6.1
+# FIG 0/19 -> EN 300 401 8.1.6.2
+# FIG 0/25 -> EN 300 401 8.1.6.3
+# FIG 0/26 -> EN 300 401 8.1.6.4
+#
+# A natural-language query must not drift to a neighbouring
+# announcement clause.
+# ============================================================
+
+_generate_evidence_before_dab_fig_lock = (
+    generate_evidence
+)
+
+
+def _explicit_dab_fig_target(
+    message: str,
+    domain: str,
+) -> tuple[str, str] | None:
+
+    import re
+
+    if str(
+        domain
+        or ""
+    ).strip().casefold() != "radio":
+        return None
+
+    value = str(
+        message
+        or ""
+    )
+
+    mapping = {
+        "18": (
+            "8.1.6.1",
+            "Announcement support",
+        ),
+        "19": (
+            "8.1.6.2",
+            "Announcement switching",
+        ),
+        "25": (
+            "8.1.6.3",
+            "OE Announcement support",
+        ),
+        "26": (
+            "8.1.6.4",
+            "OE Announcement switching",
+        ),
+    }
+
+    match = re.search(
+        r"\bFIG\s*0\s*/\s*(18|19|25|26)\b",
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    if match is None:
+        return None
+
+    return mapping[
+        match.group(1)
+    ]
+
+
+def _dab_fig_retrieval_query(
+    message: str,
+    domain: str,
+) -> str:
+
+    target = _explicit_dab_fig_target(
+        message,
+        domain,
+    )
+
+    if target is None:
+        return message
+
+    clause, title = target
+
+    return (
+        str(message or "").strip()
+        + "\n\n"
+        + "Exact DAB retrieval anchor: "
+        + "ETSI EN 300 401 V2.2.1 "
+        + "clause "
+        + clause
+        + " "
+        + title
+        + "."
+    )
+
+
+def generate_evidence(
+    message: str,
+    domain: str = "telecom",
+) -> dict:
+
+    target = _explicit_dab_fig_target(
+        message,
+        domain,
+    )
+
+    retrieval_message = (
+        _dab_fig_retrieval_query(
+            message,
+            domain,
+        )
+    )
+
+    output = dict(
+        _generate_evidence_before_dab_fig_lock(
+            retrieval_message,
+            domain,
+        )
+    )
+
+    if target is None:
+        return output
+
+    clause, _ = target
+
+    evidence = list(
+        output.get(
+            "evidence",
+            [],
+        )
+        or []
+    )
+
+    exact = [
+        source
+        for source in evidence
+        if (
+            str(
+                source.get("org", "")
+                or ""
+            ).strip().upper()
+            == "ETSI"
+
+            and str(
+                source.get("code", "")
+                or ""
+            ).strip().upper()
+            == "EN 300 401"
+
+            and str(
+                source.get("clause", "")
+                or ""
+            ).strip()
+            == clause
+        )
+    ]
+
+    if exact:
+        output[
+            "evidence"
+        ] = exact
+
+    return output

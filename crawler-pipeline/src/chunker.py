@@ -4058,3 +4058,167 @@ def build_chunks(
             )
 
     return chunks
+
+
+# ============================================================
+# ISTLINK_ETSI_FIGURE_NOISE_CLAUSE_GUARD_V1
+# ============================================================
+#
+# PDF extraction may place diagram bit labels at column zero.
+#
+# Example from ETSI EN 300 401 Figure 43:
+#
+#     15 or 31
+#
+# The generic parser previously interpreted this as:
+#
+#     clause 15 / title "or 31"
+#
+# and therefore cut clause 8.1.6.2 in half.
+#
+# Preserve such diagram fragments as body text of the current
+# dotted sub-clause instead of opening a fake clause.
+# ============================================================
+
+_split_generic_clauses_before_figure_noise_guard = (
+    _split_generic_clauses
+)
+
+
+def _looks_like_figure_noise_clause(
+    clause_no: str,
+    title: str,
+) -> bool:
+
+    number = str(
+        clause_no
+        or ""
+    ).strip()
+
+    value = " ".join(
+        str(
+            title
+            or ""
+        ).casefold().split()
+    )
+
+    # Real nested clauses such as 8.1.6.3 are never rejected.
+    if (
+        not number.isdigit()
+        or "." in number
+        or not value
+    ):
+        return False
+
+    # Typical PDF figure/grid fragments.
+    if re.fullmatch(
+        r"or\s+\d+(?:\s+\d+)*",
+        value,
+    ):
+        return True
+
+    if re.fullmatch(
+        r"r\s*-\s*\d+",
+        value,
+    ):
+        return True
+
+    alpha_tokens = set(
+        re.findall(
+            r"[a-z]+",
+            value,
+        )
+    )
+
+    if (
+        alpha_tokens
+        and alpha_tokens
+        <= {
+            "b",
+            "bit",
+            "bits",
+            "byte",
+            "bytes",
+            "or",
+            "r",
+        }
+    ):
+        return True
+
+    return False
+
+
+def _split_generic_clauses(
+    document_text: str,
+) -> list[
+    tuple[str, str, str]
+]:
+
+    clauses = (
+        _split_generic_clauses_before_figure_noise_guard(
+            document_text
+        )
+    )
+
+    repaired: list[
+        tuple[str, str, str]
+    ] = []
+
+    for (
+        clause_no,
+        clause_title,
+        body,
+    ) in clauses:
+
+        if (
+            repaired
+            and _looks_like_figure_noise_clause(
+                clause_no,
+                clause_title,
+            )
+            # Only absorb the fake heading when it appears
+            # inside a real dotted sub-clause such as 8.1.6.2.
+            and "."
+            in str(
+                repaired[-1][0]
+            )
+        ):
+
+            (
+                previous_no,
+                previous_title,
+                previous_body,
+            ) = repaired[-1]
+
+            continuation = (
+                str(clause_no).strip()
+                + " "
+                + str(clause_title).strip()
+                + "\n"
+                + str(body or "").strip()
+            ).strip()
+
+            repaired[-1] = (
+                previous_no,
+                previous_title,
+                (
+                    str(
+                        previous_body
+                        or ""
+                    ).rstrip()
+                    + "\n"
+                    + continuation
+                ).strip(),
+            )
+
+            continue
+
+        repaired.append(
+            (
+                clause_no,
+                clause_title,
+                body,
+            )
+        )
+
+    return repaired
