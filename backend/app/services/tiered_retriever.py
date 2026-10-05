@@ -320,6 +320,113 @@ def _explicit_5gs_reference_point(
     )
 
 
+
+# ============================================================
+# PARADOKS_CELL_BROADCAST_INTENT_V2
+# ============================================================
+#
+# Public Warning / Cell Broadcast queries are often expressed
+# via protocol message names instead of the literal phrase
+# "cell broadcast".
+#
+
+def _is_cell_broadcast_intent(
+    query: str,
+) -> bool:
+
+    folded = str(
+        query
+        or ""
+    ).casefold()
+
+    if (
+        "cell broadcast"
+        in folded
+        or "cellbroadcast"
+        in folded
+        or "public warning system"
+        in folded
+        or "public warning"
+        in folded
+    ):
+        return True
+
+    patterns = (
+        r"\bcbs\b",
+        r"\bcbc(?:f)?\b",
+        r"\bpws\b",
+        r"\betws\b",
+        r"\bcmas\b",
+        (
+            r"\bwrite[\s-]*replace[\s-]*warning"
+            r"(?:[\s-]*(?:request|indication))?\b"
+        ),
+    )
+
+    return any(
+        re.search(
+            pattern,
+            folded,
+        )
+        is not None
+        for pattern in patterns
+    )
+
+
+
+
+# ============================================================
+# PARADOKS_NGAP_WRITE_REPLACE_ROUTING_V1
+# ============================================================
+
+def _is_ngap_write_replace_intent(
+    query: str,
+) -> bool:
+
+    folded = (
+        str(
+            query
+            or ""
+        )
+        .casefold()
+        .replace(
+            "_",
+            "-",
+        )
+    )
+
+    is_write_replace = (
+        re.search(
+            (
+                r"\bwrite[\s-]*replace[\s-]*warning"
+                r"(?:[\s-]*(?:request|response))?\b"
+            ),
+            folded,
+        )
+        is not None
+    )
+
+    if not is_write_replace:
+        return False
+
+    ngap_context = (
+        "ngap" in folded
+        or "ng-ran" in folded
+        or "ng ran" in folded
+        or "5g" in folded
+        or "5gs" in folded
+        or re.search(
+            r"\bamf\b",
+            folded,
+        )
+        is not None
+    )
+
+    return bool(
+        ngap_context
+    )
+
+
 class TieredRetriever:
     """
     Paradoks iki katmanlı retrieval.
@@ -2017,14 +2124,8 @@ class TieredRetriever:
         query_lower = clean_query.casefold()
 
         is_cell_broadcast_query = (
-            "cell broadcast" in query_lower
-            or "cellbroadcast" in query_lower
-            or (
-                re.search(
-                    r"\bcbs\b",
-                    query_lower,
-                )
-                is not None
+            _is_cell_broadcast_intent(
+                clean_query
             )
         )
 
@@ -2463,6 +2564,486 @@ class TieredRetriever:
                         reference_matches
                     )
 
+        # ====================================================
+        # PARADOKS_NGAP_WRITE_REPLACE_EXACT_ROUTE_V1
+        # ====================================================
+        #
+        # A 5G / NG-RAN / NGAP Write-Replace question asking
+        # for message contents / IEs belongs first to NGAP.
+        #
+        # TS 38.413 contains the actual
+        # WriteReplaceWarningRequestIEs ASN.1 definition.
+        #
+        # Run this BEFORE the broader Cell Broadcast route,
+        # otherwise TS 23.041 can hide the message-level NGAP
+        # evidence.
+        #
+
+        if _is_ngap_write_replace_intent(
+            clean_query
+        ):
+
+            print(
+                "[TIERED] NGAP Write-Replace intent detected."
+            )
+
+            ngap_where = {
+                "$and": [
+                    {
+                        "org": "3GPP",
+                    },
+                    {
+                        "code": "TS 38.413",
+                    },
+                ]
+            }
+
+            ngap_query = (
+                "NGAP WriteReplaceWarningRequest "
+                "WriteReplaceWarningRequestIEs "
+                "protocolIEs Information Elements"
+            )
+
+            ngap_matches = (
+                self.back_retriever.search(
+                    query=ngap_query,
+                    top_k=max(
+                        top_k,
+                        24,
+                    ),
+                    where=ngap_where,
+                )
+            )
+
+            def _write_replace_text(
+                candidate,
+            ):
+
+                metadata = (
+                    candidate.get(
+                        "metadata",
+                        {},
+                    )
+                    or {}
+                )
+
+                values = [
+                    candidate.get(
+                        "text",
+                        "",
+                    ),
+                    candidate.get(
+                        "document",
+                        "",
+                    ),
+                    candidate.get(
+                        "content",
+                        "",
+                    ),
+                    candidate.get(
+                        "chunk_text",
+                        "",
+                    ),
+                    candidate.get(
+                        "title",
+                        "",
+                    ),
+                    candidate.get(
+                        "clause_title",
+                        "",
+                    ),
+                    metadata.get(
+                        "title",
+                        "",
+                    ),
+                    metadata.get(
+                        "clause_title",
+                        "",
+                    ),
+                    metadata.get(
+                        "clause",
+                        "",
+                    ),
+                ]
+
+                return " ".join(
+                    str(
+                        value
+                        or ""
+                    )
+                    for value in values
+                ).casefold()
+
+            def _write_replace_score(
+                candidate,
+            ):
+
+                searchable = (
+                    _write_replace_text(
+                        candidate
+                    )
+                )
+
+                metadata = (
+                    candidate.get(
+                        "metadata",
+                        {},
+                    )
+                    or {}
+                )
+
+                clause = str(
+                    metadata.get(
+                        "clause",
+                        "",
+                    )
+                    or ""
+                ).strip()
+
+                score = 0
+
+                # The actual request IE definition is the
+                # strongest possible evidence for an IE-list
+                # question.
+                if (
+                    "writereplacewarningrequesties"
+                    in searchable
+                ):
+                    score += 300
+
+                if (
+                    "writereplacewarningrequest"
+                    in searchable
+                    and "protocolies"
+                    in searchable
+                ):
+                    score += 220
+
+                if (
+                    "write-replace warning request"
+                    in searchable
+                ):
+                    score += 180
+
+                if (
+                    "writereplacewarningrequest"
+                    in searchable
+                ):
+                    score += 140
+
+                # Continuation chunk of the same ?9.4.4 request
+                # carries the final optional request IEs.
+                if (
+                    clause == "9.4.4"
+                    and (
+                        "concurrentwarningmessageind"
+                        in searchable
+                        or "warningareacoordinates"
+                        in searchable
+                    )
+                ):
+                    score += 200
+
+                if (
+                    clause == "9.4.4"
+                    and (
+                        "id-messageidentifier"
+                        in searchable
+                        and "id-serialnumber"
+                        in searchable
+                    )
+                ):
+                    score += 160
+
+                # Procedure definition is useful supporting
+                # evidence but should rank below the PDU/IE
+                # definition for this question.
+                if (
+                    "id-writereplacewarning"
+                    in searchable
+                ):
+                    score += 60
+
+                if (
+                    "writereplacewarningresponse"
+                    in searchable
+                ):
+                    score += 20
+
+                return score
+
+            # =================================================
+            # PARADOKS_NGAP_WRITE_REPLACE_EXACT_CHROMA_V1
+            # =================================================
+            #
+            # Semantic fusion intentionally caps its candidate
+            # pool. A long ASN.1 document such as TS 38.413 may
+            # therefore contain the exact
+            # WriteReplaceWarningRequestIEs chunk while a nearby
+            # generic ?9.4.4 chunk survives fusion instead.
+            #
+            # For an explicit protocol-message query, perform a
+            # bounded deterministic scan INSIDE the already
+            # selected TS 38.413 document and merge exact-token
+            # matches back into the candidate set.
+            #
+
+            exact_matches = []
+            exact_seen = set()
+
+            version_id = ""
+
+            for candidate in ngap_matches:
+
+                candidate_metadata = (
+                    candidate.get(
+                        "metadata",
+                        {},
+                    )
+                    or {}
+                )
+
+                candidate_version_id = str(
+                    candidate_metadata.get(
+                        "version_id",
+                        "",
+                    )
+                    or ""
+                ).strip()
+
+                if candidate_version_id:
+                    version_id = (
+                        candidate_version_id
+                    )
+                    break
+
+            exact_where = (
+                {
+                    "version_id":
+                        version_id,
+                }
+                if version_id
+                else ngap_where
+            )
+
+            try:
+                exact_raw = (
+                    self
+                    .back_retriever
+                    .collection
+                    .get(
+                        where=exact_where,
+                        include=[
+                            "metadatas",
+                            "documents",
+                        ],
+                    )
+                )
+
+            except Exception as error:
+
+                print(
+                    "[TIERED] NGAP exact Chroma scan "
+                    "failed:",
+                    type(error).__name__,
+                )
+
+                exact_raw = {}
+
+            raw_ids = (
+                exact_raw.get(
+                    "ids",
+                    [],
+                )
+                or []
+            )
+
+            raw_metadatas = (
+                exact_raw.get(
+                    "metadatas",
+                    [],
+                )
+                or []
+            )
+
+            raw_documents = (
+                exact_raw.get(
+                    "documents",
+                    [],
+                )
+                or []
+            )
+
+            for index, chunk_id in enumerate(
+                raw_ids
+            ):
+
+                metadata = (
+                    raw_metadatas[index]
+                    if index
+                    < len(
+                        raw_metadatas
+                    )
+                    else {}
+                ) or {}
+
+                document = (
+                    raw_documents[index]
+                    if index
+                    < len(
+                        raw_documents
+                    )
+                    else ""
+                ) or ""
+
+                candidate = {
+                    "chunk_id":
+                        chunk_id,
+
+                    "text":
+                        document,
+
+                    "metadata":
+                        metadata,
+
+                    # Exact lexical evidence is deliberately
+                    # treated as a first-class retrieval hit.
+                    # CrossEncoder still performs final ranking
+                    # in evidence_service afterwards.
+                    "distance":
+                        0.0,
+
+                    "fusion_score":
+                        1.0,
+
+                    "best_rank":
+                        0,
+
+                    "query_hit_count":
+                        1,
+
+                    "matched_queries": [
+                        ngap_query,
+                    ],
+
+                    "matched_query_ranks": [
+                        0,
+                    ],
+                }
+
+                exact_score = (
+                    _write_replace_score(
+                        candidate
+                    )
+                )
+
+                if exact_score <= 0:
+                    continue
+
+                exact_seen.add(
+                    str(
+                        chunk_id
+                    )
+                )
+
+                exact_matches.append(
+                    candidate
+                )
+
+            # Preserve useful semantic candidates as supporting
+            # evidence, but do not duplicate exact Chroma hits.
+            for candidate in ngap_matches:
+
+                chunk_id = str(
+                    candidate.get(
+                        "chunk_id",
+                        "",
+                    )
+                    or candidate.get(
+                        "id",
+                        "",
+                    )
+                    or ""
+                )
+
+                if (
+                    chunk_id
+                    and chunk_id
+                    in exact_seen
+                ):
+                    continue
+
+                if (
+                    _write_replace_score(
+                        candidate
+                    )
+                    <= 0
+                ):
+                    continue
+
+                exact_matches.append(
+                    candidate
+                )
+
+            exact_matches.sort(
+                key=lambda candidate: (
+                    -_write_replace_score(
+                        candidate
+                    ),
+                    float(
+                        candidate.get(
+                            "distance",
+                            1.0,
+                        )
+                        or 0.0
+                    ),
+                )
+            )
+
+            print(
+                "[TIERED] NGAP deterministic "
+                "Write-Replace candidates:",
+                len(
+                    exact_matches
+                ),
+            )
+
+            if exact_matches:
+
+                print(
+                    "[TIERED] NGAP Write-Replace "
+                    "exact candidates:",
+                    len(
+                        exact_matches
+                    ),
+                )
+
+                print(
+                    "[TIERED] Selected domain/tier: "
+                    "TELECOM / NGAP_WRITE_REPLACE / "
+                    "3GPP TS 38.413"
+                )
+
+                return (
+                    exact_matches[
+                        :top_k
+                    ]
+                )
+
+            if ngap_matches:
+
+                print(
+                    "[TIERED] NGAP exact token match "
+                    "not found; using TS 38.413 "
+                    "document-filtered fallback."
+                )
+
+                return (
+                    ngap_matches[
+                        :top_k
+                    ]
+                )
+
         # ----------------------------------------------------
         # CELL BROADCAST PRIORITY ROUTING
         # ----------------------------------------------------
@@ -2482,18 +3063,8 @@ class TieredRetriever:
         )
 
         is_cell_broadcast_query = (
-            "cell broadcast"
-            in query_lower
-
-            or "cellbroadcast"
-            in query_lower
-
-            or (
-                re.search(
-                    r"\bcbs\b",
-                    query_lower,
-                )
-                is not None
+            _is_cell_broadcast_intent(
+                clean_query
             )
         )
 
