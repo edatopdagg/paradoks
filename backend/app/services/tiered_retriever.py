@@ -395,18 +395,31 @@ def _is_ngap_write_replace_intent(
         )
     )
 
-    is_write_replace = (
+    # --------------------------------------------------------
+    # WRITE-REPLACE BASE INTENT
+    # --------------------------------------------------------
+    #
+    # Users do not necessarily know the full normative message
+    # name "WRITE-REPLACE WARNING REQUEST".
+    #
+    # Natural questions such as:
+    #
+    #   "5G write replace mesajını gönderebilmem için
+    #    hangi IE'ler olmalı?"
+    #
+    # still carry enough information to resolve the NGAP
+    # message-schema intent.
+    # --------------------------------------------------------
+
+    has_write_replace = (
         re.search(
-            (
-                r"\bwrite[\s-]*replace[\s-]*warning"
-                r"(?:[\s-]*(?:request|response))?\b"
-            ),
+            r"\bwrite[\s-]*replace\b",
             folded,
         )
         is not None
     )
 
-    if not is_write_replace:
+    if not has_write_replace:
         return False
 
     ngap_context = (
@@ -422,8 +435,47 @@ def _is_ngap_write_replace_intent(
         is not None
     )
 
+    if not ngap_context:
+        return False
+
+    # Full normative name remains authoritative.
+    explicit_warning_message = (
+        re.search(
+            (
+                r"\bwrite[\s-]*replace[\s-]*warning"
+                r"(?:[\s-]*(?:request|response))?\b"
+            ),
+            folded,
+        )
+        is not None
+    )
+
+    # For abbreviated "write replace" wording require a
+    # message/schema signal. This prevents generic uses of
+    # "write/replace" from being forced into NGAP.
+    schema_context = (
+        re.search(
+            r"\bie\b",
+            folded,
+        )
+        is not None
+        or "information element" in folded
+        or "information elements" in folded
+        or "protocolie" in folded
+        or "message" in folded
+        or "mesaj" in folded
+        or "field" in folded
+        or "alan" in folded
+        or "mandatory" in folded
+        or "optional" in folded
+        or "zorunlu" in folded
+        or "isteğe bağlı" in folded
+        or "istege bagli" in folded
+    )
+
     return bool(
-        ngap_context
+        explicit_warning_message
+        or schema_context
     )
 
 
@@ -2702,6 +2754,31 @@ class TieredRetriever:
 
                 score = 0
 
+                # Prefer the normative NGAP message IE table
+                # over the later ASN.1 PDU definition when the
+                # user asks which IEs/fields the request carries.
+                #
+                # Do not bind this to a fixed clause number:
+                # future TS 38.413 releases may move the clause.
+                # The table structure is the stable signal.
+                is_message_ie_table = (
+                    "write-replace warning request"
+                    in searchable
+                    and "ie/group name"
+                    in searchable
+                    and "presence"
+                    in searchable
+                    and "criticality"
+                    in searchable
+                    and "message identifier"
+                    in searchable
+                    and "serial number"
+                    in searchable
+                )
+
+                if is_message_ie_table:
+                    score += 2000
+
                 # The actual request IE definition is the
                 # strongest possible evidence for an IE-list
                 # question.
@@ -3023,6 +3100,24 @@ class TieredRetriever:
                     "TELECOM / NGAP_WRITE_REPLACE / "
                     "3GPP TS 38.413"
                 )
+
+                # Preserve the deterministic specialist primary
+                # candidate through the generic CrossEncoder stage.
+                # Supporting evidence may still be reranked normally.
+                for deterministic_index, candidate in enumerate(
+                    exact_matches,
+                    start=1,
+                ):
+                    candidate[
+                        "deterministic_exact_rank"
+                    ] = deterministic_index
+
+                    candidate[
+                        "deterministic_exact_lock"
+                    ] = (
+                        deterministic_index
+                        == 1
+                    )
 
                 return (
                     exact_matches[

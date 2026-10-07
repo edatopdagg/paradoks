@@ -795,6 +795,32 @@ def prioritize_evidence(
         reverse=True,
     )
 
+    # A deterministic specialist route may identify the
+    # normative primary evidence more reliably than the
+    # generic CrossEncoder. Preserve that one primary item
+    # after normal evidence-priority scoring.
+    locked_primary = next(
+        (
+            item
+            for item in prioritized
+            if item[2].get(
+                "deterministic_exact_lock",
+                False,
+            )
+        ),
+        None,
+    )
+
+    if locked_primary is not None:
+        prioritized = (
+            [locked_primary]
+            + [
+                item
+                for item in prioritized
+                if item is not locked_primary
+            ]
+        )
+
     return [
         item[2]
         for item in prioritized

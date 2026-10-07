@@ -53,6 +53,21 @@ class Retriever:
             dict[str, Any],
         ] = {}
 
+        # ISTLINK_DOCUMENT_VERSION_CACHE_INVALIDATION_V1
+        #
+        # The org/code -> latest version_id cache is valid only
+        # while the backing V3 catalog remains unchanged.
+        #
+        # SQLite may write through either catalog.sqlite3 or its
+        # WAL file, so both participate in the signature.
+        self._document_where_cache_signature: (
+            tuple[
+                tuple[str, int, int],
+                ...,
+            ]
+            | None
+        ) = None
+
         print(
             "[RETRIEVER] Chroma DB:",
             CHROMA_DB_PATH,
@@ -235,6 +250,66 @@ class Retriever:
         return None
 
 
+    @staticmethod
+    def _catalog_cache_signature(
+        catalog_path: Path,
+    ) -> tuple[
+        tuple[str, int, int],
+        ...,
+    ]:
+        """
+        Return a cheap filesystem signature for the active
+        V3 catalog.
+
+        SQLite may commit directly to catalog.sqlite3 or,
+        when WAL mode is active, to catalog.sqlite3-wal.
+
+        A change in either file invalidates cached latest
+        version_id resolutions.
+        """
+
+        paths = (
+            catalog_path,
+            Path(
+                str(catalog_path)
+                + "-wal"
+            ),
+        )
+
+        signature = []
+
+        for item in paths:
+
+            try:
+                stat = item.stat()
+
+                signature.append(
+                    (
+                        item.name,
+                        int(
+                            stat.st_mtime_ns
+                        ),
+                        int(
+                            stat.st_size
+                        ),
+                    )
+                )
+
+            except OSError:
+
+                signature.append(
+                    (
+                        item.name,
+                        -1,
+                        -1,
+                    )
+                )
+
+        return tuple(
+            signature
+        )
+
+
     def _resolve_fast_document_where(
         self,
         where: dict[str, Any] | None,
@@ -281,19 +356,6 @@ class Retriever:
             code.strip().casefold(),
         )
 
-        cached = (
-            self
-            ._document_where_cache
-            .get(
-                cache_key
-            )
-        )
-
-        if cached is not None:
-            return dict(
-                cached
-            )
-
         catalog_path = (
             self
             ._resolve_catalog_path()
@@ -307,6 +369,47 @@ class Retriever:
             )
 
             return where
+
+        catalog_signature = (
+            self
+            ._catalog_cache_signature(
+                catalog_path
+            )
+        )
+
+        if (
+            self._document_where_cache_signature
+            != catalog_signature
+        ):
+
+            had_cached_documents = bool(
+                self._document_where_cache
+            )
+
+            self._document_where_cache.clear()
+
+            self._document_where_cache_signature = (
+                catalog_signature
+            )
+
+            if had_cached_documents:
+                print(
+                    "[RETRIEVAL] Document version cache "
+                    "invalidated: catalog changed."
+                )
+
+        cached = (
+            self
+            ._document_where_cache
+            .get(
+                cache_key
+            )
+        )
+
+        if cached is not None:
+            return dict(
+                cached
+            )
 
         connection = None
 

@@ -158,6 +158,26 @@ class V3Catalog:
         version_value = version.strip()
         version_id = _stable_id("ver", document_id, version_value)
 
+        # A document may have at most one latest version.
+        #
+        # When a new/current version is promoted to latest,
+        # demote every other version of the same document
+        # before the upsert. Historical is_latest=False
+        # writes must not affect the current latest version.
+        if is_latest:
+            self.connection.execute(
+                """
+                UPDATE document_versions
+                SET is_latest = 0
+                WHERE document_id = ?
+                  AND version != ?
+                """,
+                (
+                    document_id,
+                    version_value,
+                ),
+            )
+
         self.connection.execute(
             """
             INSERT INTO document_versions(
