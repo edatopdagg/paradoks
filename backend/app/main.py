@@ -231,3 +231,70 @@ async def compare_compliance(
                 error
             ),
         ) from error
+
+
+# ISTLINK_CANONICAL_SOURCE_PDF_V1
+# The PDF is served only if its path is catalog-backed and inside an
+# administrator-configured local storage root. Never accept a filesystem path
+# from the browser.
+@app.get('/sources/{version_id}/clauses/{clause_id}/pdf')
+def source_clause_pdf(version_id: str, clause_id: str):
+    import os
+    from pathlib import Path, PurePosixPath
+    from fastapi.responses import Response
+
+    record = get_source_clause(version_id=version_id, clause_id=clause_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail='Clause bulunamadı.')
+    if hasattr(record, 'model_dump'):
+        record = record.model_dump()
+    if not isinstance(record, dict):
+        raise HTTPException(status_code=502, detail='Kaynak kaydı geçersiz.')
+
+    local_ref = str(record.get('local_path') or '').replace('\\', '/')
+    local_part = PurePosixPath(local_ref)
+    if (
+        not local_ref.lower().endswith('.pdf')
+        or not local_ref
+        or local_part.is_absolute()
+        or '..' in local_part.parts
+        or ':' in local_ref
+    ):
+        raise HTTPException(status_code=404, detail='PDF kaynağı bulunamadı.')
+
+    roots = os.getenv('PARADOKS_PDF_ROOTS', '')
+    for raw_root in roots.split(';'):
+        if not raw_root.strip():
+            continue
+        root = Path(raw_root.strip()).expanduser().resolve()
+        if not root.is_dir():
+            continue
+        # Prefer canonical relative location; the basename fallback supports
+        # verified legacy parser copies without exposing arbitrary paths.
+        for candidate in (root.joinpath(*local_part.parts), root / local_part.name):
+            actual = candidate.resolve()
+            if actual.is_relative_to(root) and actual.is_file():
+                # ISTLINK_CLAUSE_PAGES_ONLY_V1: preserve PDF figures/tables,
+                # but send only the pages authorized by this catalog clause.
+                from app.services.source_pdf_pages import extract_clause_pdf_pages
+                try:
+                    pages_pdf = extract_clause_pdf_pages(
+                        actual,
+                        record.get('page_start'),
+                        record.get('page_end'),
+                    )
+                except (ValueError, RuntimeError, OSError) as exc:
+                    raise HTTPException(
+                        status_code=422,
+                        detail='Kaynak PDF sayfa aralığı okunamadı.',
+                    ) from exc
+                return Response(
+                    content=pages_pdf,
+                    media_type='application/pdf',
+                    headers={
+                        'Content-Disposition': 'inline; filename="clause-pages.pdf"',
+                        'X-Content-Type-Options': 'nosniff',
+                        'Cache-Control': 'private, no-store',
+                    },
+                )
+    raise HTTPException(status_code=404, detail='Yerel PDF bulunamadı.')
